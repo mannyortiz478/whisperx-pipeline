@@ -6,6 +6,7 @@ Knows nothing about users, jobs, or the database.
 Run: uvicorn main:app --port 8000 --reload
 """
 
+import json
 import os
 import re
 import tempfile
@@ -35,7 +36,21 @@ def format_timestamp(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
 
-def extract_action_items(segments: list, speaker_labels: dict) -> list:
+_SYSTEM_PROMPT = (
+    "You are an expert meeting analyst. Extract all action items from this "
+    "meeting transcript. For each action item return a JSON object with:\n"
+    "- text: clear description of the task (start with a verb)\n"
+    "- assignee: speaker label of who is responsible (or 'Team' if unclear)\n"
+    "- priority: 'high' if urgent/critical/ASAP, 'medium' if has a deadline, "
+    "'normal' otherwise\n"
+    "- timestamp: time when it was mentioned (MM:SS format)\n"
+    "- due_date: inferred due date as plain text if mentioned, else null\n"
+    "Return ONLY a valid JSON array of action item objects. No markdown, no "
+    "preamble, no explanation."
+)
+
+
+def _regex_extract(segments: list, speaker_labels: dict) -> list:
     patterns = [
         r"(?:i'?ll|i will|i can|let me|i'm going to|i need to|i should)\s+([^.!?\n]{10,80})",
         r"(?:can you|could you|please|would you)\s+([^.!?\n]{10,80})",
@@ -47,7 +62,6 @@ def extract_action_items(segments: list, speaker_labels: dict) -> list:
     for seg in segments:
         text_lower = seg.get("text", "").lower()
         raw_lbl = seg.get("speaker", "SPEAKER_00")
-        assignee = speaker_labels.get(raw_lbl, raw_lbl)
         for pattern in patterns:
             for match in re.findall(pattern, text_lower, re.IGNORECASE):
                 cleaned = match.strip().rstrip(".,;:")
@@ -64,8 +78,49 @@ def extract_action_items(segments: list, speaker_labels: dict) -> list:
                         "speaker_label": raw_lbl,
                         "priority":      priority,
                         "timestamp":     format_timestamp(seg.get("start", 0)),
+                        "due_date":      None,
                     })
-    return items[:20]
+    return items[:25]
+
+
+def extract_action_items(segments: list, speaker_labels: dict) -> list:
+    openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+
+    if openai_key:
+        print("Using GPT-4o for action extraction")
+        try:
+            from openai import OpenAI  # lazy import — optional dependency
+
+            # Build a readable transcript for the model
+            lines = []
+            for seg in segments:
+                raw_lbl = seg.get("speaker", "SPEAKER_00")
+                name = speaker_labels.get(raw_lbl, raw_lbl)
+                ts = format_timestamp(seg.get("start", 0))
+                text = seg.get("text", "").strip()
+                if text:
+                    lines.append(f"{name} [{ts}]: {text}")
+            transcript_str = "\n".join(lines)
+
+            client = OpenAI(api_key=openai_key)
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user",   "content": transcript_str},
+                ],
+                max_tokens=1000,
+                temperature=0,
+            )
+            raw = response.choices[0].message.content or ""
+            items = json.loads(raw)
+            if isinstance(items, list):
+                return items[:25]
+        except Exception as exc:
+            print(f"GPT-4o extraction failed ({exc}), falling back to regex")
+
+    print("Using regex fallback for action extraction")
+    return _regex_extract(segments, speaker_labels)
 
 
 # ─── Routes ──────────────────────────────────────────────────────────────────

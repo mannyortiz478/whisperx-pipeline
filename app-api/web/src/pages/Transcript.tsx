@@ -352,7 +352,7 @@ export const Transcript: React.FC = () => {
                     key={item.id}
                     className="p-3 bg-surface2 border border-subtle rounded text-sm"
                   >
-                    <div className="flex items-start gap-2 mb-1">
+                    <div className="flex items-start gap-2 mb-1 flex-wrap">
                       <span
                         className={`px-2 py-0.5 rounded text-xs font-mono font-medium text-white ${
                           item.priority === 'high'
@@ -364,6 +364,11 @@ export const Transcript: React.FC = () => {
                       >
                         {item.priority}
                       </span>
+                      {item.due_date && (
+                        <span className="px-2 py-0.5 rounded text-xs font-mono font-medium text-amber bg-amber/20">
+                          due: {item.due_date}
+                        </span>
+                      )}
                     </div>
                     <p className="font-sans text-white">{item.text}</p>
                     <p className="text-xs text-muted mt-1">

@@ -127,6 +127,7 @@ class ActionItem(db.Model):
     assignee  = db.Column(db.String)
     priority  = db.Column(db.String, default="normal")
     timestamp = db.Column(db.String)
+    due_date  = db.Column(db.String, nullable=True)
     job       = db.relationship("Job", back_populates="actions")
 
     def to_dict(self):
@@ -136,6 +137,7 @@ class ActionItem(db.Model):
             "assignee":  self.assignee,
             "priority":  self.priority,
             "timestamp": self.timestamp,
+            "due_date":  self.due_date,
         }
 
 
@@ -228,15 +230,23 @@ def run_job(job_id: str, filepath: str, hf_token: str | None, transcription_mode
                 ))
 
             # Create ActionItem rows
+            # GPT-4o returns "assignee" directly; regex returns "speaker_label" (SPEAKER_XX id)
             for item in data.get("action_items", []):
-                raw_lbl  = item.get("speaker_label", "")
-                sp       = speaker_map.get(raw_lbl)
+                raw_lbl = item.get("speaker_label", "")
+                sp = speaker_map.get(raw_lbl)
+                assignee = (
+                    item.get("assignee")
+                    or (sp.display_name if sp else None)
+                    or raw_lbl
+                    or "Team"
+                )
                 db.session.add(ActionItem(
                     job_id=job_id,
                     text=item["text"],
-                    assignee=sp.display_name if sp else raw_lbl,
+                    assignee=assignee,
                     priority=item.get("priority", "normal"),
                     timestamp=item.get("timestamp"),
+                    due_date=item.get("due_date"),
                 ))
 
             # Save transcript txt
@@ -478,6 +488,14 @@ if __name__ == "__main__":
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     with app.app_context():
         db.create_all()
+        # Migrate existing DBs: add due_date column if it doesn't exist yet
+        from sqlalchemy import text as sa_text
+        with db.engine.connect() as _conn:
+            try:
+                _conn.execute(sa_text("ALTER TABLE action_items ADD COLUMN due_date TEXT"))
+                _conn.commit()
+            except Exception:
+                pass  # column already present
         print("✓ Database ready")
     print(f"\n App API        → http://localhost:5001")
     print(f"   Speech API     → {SPEECH_API_URL}")

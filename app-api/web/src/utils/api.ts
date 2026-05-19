@@ -54,6 +54,7 @@ export interface ActionItem {
   assignee: string;
   priority: 'high' | 'medium' | 'normal';
   timestamp: string;
+  due_date?: string | null;
 }
 
 export interface JobStatus {
