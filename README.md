@@ -57,18 +57,6 @@ SPEECH_API_BASE_URL=http://localhost:8000 python app.py
 
 Then open **http://localhost:5001**
 
-## What changed from Phase 1
-
-- WhisperX/pyannote code moved entirely to `speech-api/main.py`
-- `app-api/app.py` now calls `POST /process-audio` on the speech-api via HTTP
-- Frontend shows a live speech-api connection status indicator
-- Model selector (tiny / base / small / medium / large-v3) added to UI
-- Both services share `shared/` folder for uploads, outputs, and the DB
-- The speech-api can be tested independently:
-
-```bash
-curl http://localhost:8000/health
-curl http://localhost:8000/models
 ```
 
 ## API endpoints
@@ -89,7 +77,3 @@ curl http://localhost:8000/models
 - `PATCH /jobs/<job_id>/speakers/<id>` — rename speaker
 - `PATCH /jobs/<job_id>/segments/<id>` — edit segment text
 - `GET  /download/<job_id>/<file>` — download transcript file
-
-## Next: Phase 3
-Replace `app-api/templates/index.html` with a React + Vite frontend
-with 4 pages: Upload, Job Status, Transcript Review, Job History.
