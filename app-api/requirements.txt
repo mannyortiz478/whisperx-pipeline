@@ -1,0 +1,5 @@
+# Application API requirements
+flask>=2.3.0
+flask-sqlalchemy>=3.1.0
+werkzeug>=2.3.0
+requests>=2.31.0

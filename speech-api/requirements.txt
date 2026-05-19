@@ -1,0 +1,14 @@
+# Speech Processing API requirements
+# Python 3.11 recommended
+
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
+
+# Install PyTorch FIRST for your platform:
+# CPU:       pip install torch torchaudio
+# CUDA 12.1: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+# Apple MPS: pip install torch torchaudio
+
+whisperx
+pyannote.audio>=3.1.0

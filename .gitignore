@@ -1,0 +1,40 @@
+# Python virtualenv
+.venv*/
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.eggs/
+
+# Shared runtime data (uploads, outputs, DB — never commit these)
+shared/uploads/*
+shared/outputs/*
+shared/pipeline.db
+!shared/uploads/.gitkeep
+!shared/outputs/.gitkeep
+
+# Node / Vite
+app-api/web/node_modules/
+app-api/web/dist/
+app-api/web/dist-ssr/
+app-api/web/*.local
+
+# macOS
+.DS_Store
+.AppleDouble
+
+# Editor
+.vscode/
+.idea/
+*.suo
+*.sw?
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment files (may contain secrets)
+.env
+.env.local
+.env.*.local
