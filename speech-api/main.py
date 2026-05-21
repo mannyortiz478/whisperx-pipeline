@@ -84,14 +84,13 @@ def _regex_extract(segments: list, speaker_labels: dict) -> list:
 
 
 def extract_action_items(segments: list, speaker_labels: dict) -> list:
-    openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 
-    if openai_key:
-        print("Using GPT-4o for action extraction")
+    if anthropic_key:
+        print("Using Claude for action extraction")
         try:
-            from openai import OpenAI  # lazy import — optional dependency
+            from anthropic import Anthropic  # lazy import — optional dependency
 
-            # Build a readable transcript for the model
             lines = []
             for seg in segments:
                 raw_lbl = seg.get("speaker", "SPEAKER_00")
@@ -102,22 +101,23 @@ def extract_action_items(segments: list, speaker_labels: dict) -> list:
                     lines.append(f"{name} [{ts}]: {text}")
             transcript_str = "\n".join(lines)
 
-            client = OpenAI(api_key=openai_key)
-            response = client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user",   "content": transcript_str},
-                ],
+            client = Anthropic(api_key=anthropic_key)
+            response = client.messages.create(
+                model="claude-opus-4-7",
                 max_tokens=1000,
-                temperature=0,
+                system=[{
+                    "type": "text",
+                    "text": _SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }],
+                messages=[{"role": "user", "content": transcript_str}],
             )
-            raw = response.choices[0].message.content or ""
+            raw = next((b.text for b in response.content if b.type == "text"), "")
             items = json.loads(raw)
             if isinstance(items, list):
                 return items[:25]
         except Exception as exc:
-            print(f"GPT-4o extraction failed ({exc}), falling back to regex")
+            print(f"Claude extraction failed ({exc}), falling back to regex")
 
     print("Using regex fallback for action extraction")
     return _regex_extract(segments, speaker_labels)

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from '../utils/api';
@@ -6,7 +6,21 @@ import { apiClient } from '../utils/api';
 export const History: React.FC = () => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deletingId,       setDeletingId]       = useState<string | null>(null);
+  const [generatingExport, setGeneratingExport] = useState<Record<string, 'docx' | 'pdf'>>({});
+  const [retryingId,       setRetryingId]       = useState<string | null>(null);
+  const [retryErrors,      setRetryErrors]      = useState<Record<string, string>>({});
+  // Per-row timestamp preference: true = include (default), false = exclude
+  const [noTimestamps, setNoTimestamps] = useState<Set<string>>(new Set());
+
+  // Holds active polling interval IDs so we can clear them on unmount.
+  const pollingRefs = useRef<Record<string, ReturnType<typeof setInterval>>>({});
+
+  useEffect(() => {
+    return () => {
+      Object.values(pollingRefs.current).forEach(clearInterval);
+    };
+  }, []);
 
   const { data: jobs, isLoading, isError } = useQuery({
     queryKey: ['jobs'],
@@ -31,6 +45,108 @@ export const History: React.FC = () => {
       alert('Failed to delete job');
     } finally {
       setDeletingId(null);
+    }
+  };
+
+  const handleRetry = async (e: React.MouseEvent, jobId: string) => {
+    e.stopPropagation();
+    setRetryingId(jobId);
+    setRetryErrors((prev) => { const next = { ...prev }; delete next[jobId]; return next; });
+
+    try {
+      await apiClient.retryJob(jobId);
+      setRetryingId(null);
+
+      // Optimistic update
+      queryClient.setQueryData(['jobs'], (prev: any) => ({
+        ...prev,
+        data: {
+          ...prev.data,
+          jobs: prev.data.jobs.map((j: any) =>
+            j.job_id === jobId ? { ...j, status: 'queued' } : j,
+          ),
+        },
+      }));
+
+      // Poll until completed/failed, then refresh the row
+      pollingRefs.current[jobId] = setInterval(async () => {
+        try {
+          const res = await apiClient.getStatus(jobId);
+          const s = res.data.status;
+          if (s === 'done' || s === 'error') {
+            clearInterval(pollingRefs.current[jobId]);
+            delete pollingRefs.current[jobId];
+            queryClient.invalidateQueries({ queryKey: ['jobs'] });
+          } else {
+            // Keep the row status in sync while processing
+            const mapped = s === 'processing' ? 'processing' : 'queued';
+            queryClient.setQueryData(['jobs'], (prev: any) => ({
+              ...prev,
+              data: {
+                ...prev.data,
+                jobs: prev.data.jobs.map((j: any) =>
+                  j.job_id === jobId ? { ...j, status: mapped } : j,
+                ),
+              },
+            }));
+          }
+        } catch {
+          clearInterval(pollingRefs.current[jobId]);
+          delete pollingRefs.current[jobId];
+        }
+      }, 2000);
+
+    } catch (err: any) {
+      const msg = err.response?.data?.error || 'Retry failed';
+      setRetryErrors((prev) => ({ ...prev, [jobId]: msg }));
+      setRetryingId(null);
+    }
+  };
+
+  const toggleTimestamps = (e: React.MouseEvent, jobId: string) => {
+    e.stopPropagation();
+    setNoTimestamps((prev) => {
+      const next = new Set(prev);
+      if (next.has(jobId)) next.delete(jobId); else next.add(jobId);
+      return next;
+    });
+  };
+
+  const handleExport = async (e: React.MouseEvent, jobId: string, fmt: 'txt' | 'docx' | 'pdf') => {
+    e.stopPropagation();
+    const withTs = !noTimestamps.has(jobId);
+    const tsParam = withTs ? '' : '?include_timestamps=false';
+
+    if (fmt === 'txt') {
+      const link = document.createElement('a');
+      link.href = `/download/${jobId}/transcript.txt${tsParam}`;
+      link.setAttribute('download', `transcript_${jobId}.txt`);
+      document.body.appendChild(link);
+      link.click();
+      link.parentNode?.removeChild(link);
+      return;
+    }
+    setGeneratingExport((prev) => ({ ...prev, [jobId]: fmt }));
+    try {
+      const res = await fetch(`/jobs/${jobId}/export/${fmt}${tsParam}`);
+      if (!res.ok) throw new Error('Failed');
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `transcript_${jobId}.${fmt}`);
+      document.body.appendChild(link);
+      link.click();
+      link.parentNode?.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch {
+      alert(`Failed to generate ${fmt.toUpperCase()}`);
+    } finally {
+      setGeneratingExport((prev) => {
+        const next = { ...prev };
+        delete next[jobId];
+        return next;
+      });
     }
   };
 
@@ -113,8 +229,8 @@ export const History: React.FC = () => {
               <div className="col-span-1">Duration</div>
               <div className="col-span-1">Model</div>
               <div className="col-span-1">Language</div>
-              <div className="col-span-2">Status</div>
-              <div className="col-span-2">Actions</div>
+              <div className="col-span-1">Status</div>
+              <div className="col-span-3">Actions</div>
             </div>
 
             {/* Table Rows */}
@@ -162,16 +278,70 @@ export const History: React.FC = () => {
                     >
                       {job.status}
                     </span>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDelete(job.job_id);
-                      }}
-                      disabled={deletingId === job.job_id}
-                      className="text-red hover:text-red opacity-60 hover:opacity-100 transition text-xs"
-                    >
-                      {deletingId === job.job_id ? '...' : '🗑'}
-                    </button>
+                    <div className="flex gap-2 items-center flex-wrap">
+                      {job.status === 'completed' && (
+                        <>
+                          {/* Compact timestamp toggle */}
+                          <button
+                            onClick={(e) => toggleTimestamps(e, job.job_id)}
+                            title={noTimestamps.has(job.job_id) ? 'Timestamps off' : 'Timestamps on'}
+                            className={`font-mono text-[10px] px-1.5 py-0.5 rounded border transition ${
+                              noTimestamps.has(job.job_id)
+                                ? 'bg-surface2 text-muted border-dim'
+                                : 'bg-accent/20 text-accent border-accent/50'
+                            }`}
+                          >
+                            ts
+                          </button>
+                          <button
+                            onClick={(e) => handleExport(e, job.job_id, 'txt')}
+                            className="text-muted hover:text-accent transition font-mono text-xs"
+                          >
+                            ↓txt
+                          </button>
+                          <button
+                            onClick={(e) => handleExport(e, job.job_id, 'docx')}
+                            disabled={generatingExport[job.job_id] === 'docx'}
+                            className="text-muted hover:text-accent transition font-mono text-xs disabled:opacity-40"
+                          >
+                            {generatingExport[job.job_id] === 'docx' ? '…' : '↓docx'}
+                          </button>
+                          <button
+                            onClick={(e) => handleExport(e, job.job_id, 'pdf')}
+                            disabled={generatingExport[job.job_id] === 'pdf'}
+                            className="text-muted hover:text-accent transition font-mono text-xs disabled:opacity-40"
+                          >
+                            {generatingExport[job.job_id] === 'pdf' ? '…' : '↓pdf'}
+                          </button>
+                        </>
+                      )}
+                      {job.status === 'failed' && (
+                        <>
+                          {retryErrors[job.job_id] && (
+                            <span className="text-red font-mono text-[10px]">
+                              {retryErrors[job.job_id]}
+                            </span>
+                          )}
+                          <button
+                            onClick={(e) => handleRetry(e, job.job_id)}
+                            disabled={retryingId === job.job_id}
+                            className="text-accent hover:text-white transition font-mono text-xs disabled:opacity-50"
+                          >
+                            {retryingId === job.job_id ? '…' : 'Retry'}
+                          </button>
+                        </>
+                      )}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDelete(job.job_id);
+                        }}
+                        disabled={deletingId === job.job_id}
+                        className="text-red opacity-60 hover:opacity-100 transition text-xs"
+                      >
+                        {deletingId === job.job_id ? '...' : '🗑'}
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -192,7 +362,7 @@ export const History: React.FC = () => {
                   <div className="col-span-1">
                     <p className="text-muted text-xs">{job.language || 'unknown'}</p>
                   </div>
-                  <div className="col-span-2">
+                  <div className="col-span-1">
                     <span
                       className={`px-2 py-1 rounded text-xs font-mono font-medium border inline-block ${getStatusColor(
                         job.status
@@ -201,17 +371,70 @@ export const History: React.FC = () => {
                       {job.status}
                     </span>
                   </div>
-                  <div className="col-span-2 flex gap-2 justify-end">
+                  <div className="col-span-3 flex gap-2 items-center flex-wrap">
                     {job.status === 'completed' && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          navigate(`/jobs/${job.job_id}/transcript`);
-                        }}
-                        className="text-accent hover:text-white transition text-xs"
-                      >
-                        View
-                      </button>
+                      <>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigate(`/jobs/${job.job_id}/transcript`);
+                          }}
+                          className="text-accent hover:text-white transition font-mono text-xs"
+                        >
+                          View
+                        </button>
+                        {/* Compact timestamp toggle */}
+                        <button
+                          onClick={(e) => toggleTimestamps(e, job.job_id)}
+                          title={noTimestamps.has(job.job_id) ? 'Timestamps off — click to enable' : 'Timestamps on — click to disable'}
+                          className={`font-mono text-[10px] px-1.5 py-0.5 rounded border transition ${
+                            noTimestamps.has(job.job_id)
+                              ? 'bg-surface2 text-muted border-dim'
+                              : 'bg-accent/20 text-accent border-accent/50'
+                          }`}
+                        >
+                          ts
+                        </button>
+                        <button
+                          onClick={(e) => handleExport(e, job.job_id, 'txt')}
+                          className="text-muted hover:text-accent transition font-mono text-xs"
+                          title="Download TXT"
+                        >
+                          ↓txt
+                        </button>
+                        <button
+                          onClick={(e) => handleExport(e, job.job_id, 'docx')}
+                          disabled={generatingExport[job.job_id] === 'docx'}
+                          className="text-muted hover:text-accent transition font-mono text-xs disabled:opacity-40"
+                          title="Download DOCX"
+                        >
+                          {generatingExport[job.job_id] === 'docx' ? '…' : '↓docx'}
+                        </button>
+                        <button
+                          onClick={(e) => handleExport(e, job.job_id, 'pdf')}
+                          disabled={generatingExport[job.job_id] === 'pdf'}
+                          className="text-muted hover:text-accent transition font-mono text-xs disabled:opacity-40"
+                          title="Download PDF"
+                        >
+                          {generatingExport[job.job_id] === 'pdf' ? '…' : '↓pdf'}
+                        </button>
+                      </>
+                    )}
+                    {job.status === 'failed' && (
+                      <>
+                        {retryErrors[job.job_id] && (
+                          <span className="text-red font-mono text-[10px]">
+                            {retryErrors[job.job_id]}
+                          </span>
+                        )}
+                        <button
+                          onClick={(e) => handleRetry(e, job.job_id)}
+                          disabled={retryingId === job.job_id}
+                          className="text-accent hover:text-white transition font-mono text-xs disabled:opacity-50"
+                        >
+                          {retryingId === job.job_id ? '…' : 'Retry'}
+                        </button>
+                      </>
                     )}
                     <button
                       onClick={(e) => {
@@ -219,7 +442,7 @@ export const History: React.FC = () => {
                         handleDelete(job.job_id);
                       }}
                       disabled={deletingId === job.job_id}
-                      className="text-red hover:text-red opacity-60 hover:opacity-100 transition text-xs disabled:opacity-50"
+                      className="text-red opacity-60 hover:opacity-100 transition font-mono text-xs disabled:opacity-50 ml-auto"
                     >
                       {deletingId === job.job_id ? '...' : 'Delete'}
                     </button>

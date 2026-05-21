@@ -433,6 +433,31 @@ def delete_job(job_id):
     return jsonify({"deleted": True})
 
 
+@app.route("/jobs/<job_id>/retry", methods=["POST"])
+def retry_job(job_id):
+    job = db.session.get(Job, job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    if job.status != "failed":
+        return jsonify({"error": "Job is not in a failed state"}), 400
+
+    job.status       = "queued"
+    job.error        = None
+    job.started_at   = None
+    job.completed_at = None
+    job.failed_at    = None
+    db.session.commit()
+
+    hf_token = os.environ.get("HF_TOKEN")
+    threading.Thread(
+        target=run_job,
+        args=(job_id, job.filepath, hf_token, job.transcription_model),
+        daemon=True,
+    ).start()
+
+    return jsonify({"job_id": job.id, "status": "queued", "retried": True})
+
+
 @app.route("/jobs/<job_id>/speakers/<speaker_id>", methods=["PATCH"])
 def rename_speaker(job_id, speaker_id):
     data         = request.get_json()
@@ -477,8 +502,69 @@ def stream_audio(job_id):
 
 @app.route("/download/<job_id>/<filename>")
 def download(job_id, filename):
+    include_ts = request.args.get("include_timestamps", "true").lower() != "false"
+    if filename == "transcript.txt" and not include_ts:
+        job = db.session.get(Job, job_id)
+        if not job or job.status != "completed":
+            return jsonify({"error": "Job not found or not completed"}), 404
+        from exporters import generate_txt
+        text = generate_txt(job.segments, include_timestamps=False)
+        from flask import Response
+        return Response(
+            text,
+            mimetype="text/plain",
+            headers={"Content-Disposition": f'attachment; filename="{Path(job.filename).stem}_transcript.txt"'},
+        )
     folder = str(OUTPUT_DIR / job_id)
     return send_from_directory(folder, filename, as_attachment=True)
+
+
+@app.route("/jobs/<job_id>/export/docx")
+def export_docx(job_id):
+    job = db.session.get(Job, job_id)
+    if not job or job.status != "completed":
+        return jsonify({"error": "Job not found or not completed"}), 404
+    include_ts = request.args.get("include_timestamps", "true").lower() != "false"
+    from exporters import generate_docx
+    output_path = OUTPUT_DIR / job_id / "transcript.docx"
+    generate_docx(
+        job=job,
+        segments=job.segments,
+        speakers=job.speakers,
+        action_items=job.actions,
+        output_path=str(output_path),
+        include_timestamps=include_ts,
+    )
+    return send_from_directory(
+        str(OUTPUT_DIR / job_id),
+        "transcript.docx",
+        as_attachment=True,
+        download_name=f"{Path(job.filename).stem}_transcript.docx",
+    )
+
+
+@app.route("/jobs/<job_id>/export/pdf")
+def export_pdf(job_id):
+    job = db.session.get(Job, job_id)
+    if not job or job.status != "completed":
+        return jsonify({"error": "Job not found or not completed"}), 404
+    include_ts = request.args.get("include_timestamps", "true").lower() != "false"
+    from exporters import generate_pdf
+    output_path = OUTPUT_DIR / job_id / "transcript.pdf"
+    generate_pdf(
+        job=job,
+        segments=job.segments,
+        speakers=job.speakers,
+        action_items=job.actions,
+        output_path=str(output_path),
+        include_timestamps=include_ts,
+    )
+    return send_from_directory(
+        str(OUTPUT_DIR / job_id),
+        "transcript.pdf",
+        as_attachment=True,
+        download_name=f"{Path(job.filename).stem}_transcript.pdf",
+    )
 
 
 # ─── Init ─────────────────────────────────────────────────────────────────────

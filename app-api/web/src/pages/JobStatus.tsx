@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '../utils/api';
@@ -6,6 +6,19 @@ import { apiClient } from '../utils/api';
 export const JobStatus: React.FC = () => {
   const { jobId } = useParams<{ jobId: string }>();
   const navigate = useNavigate();
+  const [retrying, setRetrying] = useState(false);
+
+  const handleRetry = async () => {
+    setRetrying(true);
+    try {
+      await apiClient.retryJob(jobId!);
+      // Let the existing refetchInterval pick up the new queued status naturally.
+      // Navigate to the same page to force a clean remount and restart polling.
+      navigate(0);
+    } catch {
+      setRetrying(false);
+    }
+  };
 
   const { data: status, isLoading, isError } = useQuery({
     queryKey: ['status', jobId],
@@ -137,10 +150,11 @@ export const JobStatus: React.FC = () => {
             <p className="text-sm text-muted mb-4">{status.message}</p>
             <div className="flex gap-2">
               <button
-                onClick={() => navigate('/')}
-                className="px-4 py-2 bg-red text-white font-sans text-sm rounded hover:opacity-90 transition"
+                onClick={handleRetry}
+                disabled={retrying}
+                className="px-4 py-2 bg-accent text-bg font-sans text-sm font-medium rounded hover:opacity-90 transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Try Again
+                {retrying ? 'Retrying…' : 'Retry Transcription'}
               </button>
               <button
                 onClick={() => navigate('/history')}

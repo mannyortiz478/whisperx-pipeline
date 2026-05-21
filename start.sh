@@ -23,7 +23,7 @@ fi
 
 # Start speech-api in background
 cd speech-api
-HF_TOKEN="$HF_TOKEN" OPENAI_API_KEY="${OPENAI_API_KEY:-}" uvicorn main:app --port 8000 --reload &
+HF_TOKEN="$HF_TOKEN" ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" uvicorn main:app --port 8000 --reload &
 SPEECH_PID=$!
 cd ..
 

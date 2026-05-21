@@ -4,6 +4,8 @@ import { useQuery } from '@tanstack/react-query';
 import axios from 'axios';
 import { apiClient } from '../utils/api';
 
+const MAX_FILE_BYTES = 100 * 1024 * 1024; // 100 MB client-side guard
+
 export const Upload: React.FC = () => {
   const navigate = useNavigate();
   const [file, setFile] = useState<File | null>(null);
@@ -13,6 +15,7 @@ export const Upload: React.FC = () => {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [dragActive, setDragActive] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
 
   const { data: models } = useQuery({
     queryKey: ['models'],
@@ -45,13 +48,21 @@ export const Upload: React.FC = () => {
     setDragActive(false);
     if (e.dataTransfer.files?.[0]) {
       setFile(e.dataTransfer.files[0]);
+      setErrorMsg('');
     }
   };
 
   const handleUpload = async () => {
     if (!file) return;
+
+    if (file.size > MAX_FILE_BYTES) {
+      setErrorMsg(`File too large (${(file.size / 1024 / 1024).toFixed(0)} MB). Maximum allowed size is 100 MB.`);
+      return;
+    }
+
     setUploading(true);
     setUploadProgress(0);
+    setErrorMsg('');
     try {
       const formData = new FormData();
       formData.append('file', file);
@@ -64,8 +75,11 @@ export const Upload: React.FC = () => {
         },
       });
       navigate(`/jobs/${response.data.job_id}`);
-    } catch (error) {
-      alert('Upload failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } catch (error: any) {
+      const serverMsg =
+        error?.response?.data?.error ||
+        (error instanceof Error ? error.message : 'Unknown error');
+      setErrorMsg(`Upload failed: ${serverMsg}`);
       setUploading(false);
       setUploadProgress(0);
     }
@@ -91,7 +105,7 @@ export const Upload: React.FC = () => {
                 speechApiHealthy ? 'bg-green pulse-slow' : 'bg-red'
               }`}
             />
-            <span className="text-muted">
+            <span className="text-muted" data-testid="speech-api-status">
               Speech API: {speechApiHealthy ? 'Ready' : 'Offline'}
             </span>
           </div>
@@ -125,9 +139,15 @@ export const Upload: React.FC = () => {
               {!file && (
                 <label className="inline-block">
                   <input
+                    data-testid="file-input"
                     type="file"
                     accept="audio/*,video/*,.mp3,.mp4,.wav,.m4a,.ogg,.flac,.webm,.mkv"
-                    onChange={(e) => e.target.files?.[0] && setFile(e.target.files[0])}
+                    onChange={(e) => {
+                      if (e.target.files?.[0]) {
+                        setFile(e.target.files[0]);
+                        setErrorMsg('');
+                      }
+                    }}
                     className="hidden"
                   />
                   <span className="px-4 py-2 bg-accent text-bg font-sans font-medium rounded hover:opacity-90 transition inline-block cursor-pointer">
@@ -137,6 +157,16 @@ export const Upload: React.FC = () => {
               )}
             </div>
           </div>
+
+          {/* Inline error message */}
+          {errorMsg && (
+            <div
+              data-testid="upload-error"
+              className="p-3 bg-red/10 border border-red rounded text-red text-sm font-sans"
+            >
+              {errorMsg}
+            </div>
+          )}
 
           {/* Model Selection */}
           <div>
@@ -186,6 +216,7 @@ export const Upload: React.FC = () => {
 
           {/* Upload Button */}
           <button
+            data-testid="upload-btn"
             onClick={handleUpload}
             disabled={!file || uploading || !speechApiHealthy}
             className={`w-full py-3 font-sans font-medium rounded transition ${
@@ -204,7 +235,10 @@ export const Upload: React.FC = () => {
                 <span>Uploading...</span>
                 <span>{uploadProgress}%</span>
               </div>
-              <div className="w-full bg-surface rounded-full h-2 overflow-hidden">
+              <div
+                data-testid="upload-progress"
+                className="w-full bg-surface rounded-full h-2 overflow-hidden"
+              >
                 <div
                   className="bg-accent h-full transition-all duration-300"
                   style={{ width: `${uploadProgress}%` }}

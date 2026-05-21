@@ -113,6 +113,9 @@ export const apiClient = {
 
   downloadTranscript: (jobId: string) =>
     api.get(`/download/${jobId}/transcript.txt`, { responseType: 'blob' }),
+
+  retryJob: (jobId: string) =>
+    api.post<{ job_id: string; status: string; retried: boolean }>(`/jobs/${jobId}/retry`),
 };
 
 export default api;
