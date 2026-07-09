@@ -1,0 +1,29 @@
+{
+  "name": "whisperx-pipeline",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WhisperX transcription pipeline monorepo",
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=8"
+  },
+  "scripts": {
+    "dev:web":    "pnpm --filter web dev",
+    "dev:services": "concurrently --names speech-api,app-api,web --prefix-colors cyan,green,blue \"pnpm run dev:speech\" \"pnpm run dev:app\" \"pnpm run dev:web\"",
+    "dev:speech": "cd speech-api && source ../.venv311/bin/activate && uvicorn main:app --port 8000 --reload",
+    "dev:app":    "cd app-api && source ../.venv311/bin/activate && SPEECH_API_BASE_URL=http://localhost:8000 python app.py",
+    "build":      "pnpm --filter web build",
+    "test:unit":  "pnpm run test:unit:api && pnpm run test:unit:web",
+    "test:unit:web": "pnpm --filter web test:unit",
+    "test:unit:api": "cd app-api && ../.venv311/bin/python -m pytest tests/ -m unit -v",
+    "test:integration": "cd app-api && ../.venv311/bin/python -m pytest tests/ -m integration -v",
+    "test:e2e":   "pnpm --filter web test:e2e",
+    "test:all":   "pnpm run test:unit && pnpm run test:integration && pnpm run test:e2e",
+    "lint":       "pnpm --filter web lint",
+    "typecheck":  "pnpm --filter web typecheck",
+    "clean":      "pnpm --filter web exec rm -rf dist node_modules/.vite"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.0"
+  }
+}

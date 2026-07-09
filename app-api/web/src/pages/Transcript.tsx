@@ -1,7 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import type { Speaker, Segment, ActionItem } from '../utils/api';
+import { assetUrl } from '../lib/api';
+import type { Speaker, TranscriptSegment as Segment, ActionItem } from '@whisperx/shared-types';
+import { isJobComplete } from '@whisperx/shared-types';
 import { apiClient } from '../utils/api';
 import { useAudioPlayer, RATES } from '../hooks/useAudioPlayer';
 import { AudioPlayer } from '../components/AudioPlayer';
@@ -57,7 +59,7 @@ export const Transcript: React.FC = () => {
   });
 
   useEffect(() => {
-    if (status?.result) {
+    if (status && isJobComplete(status)) {
       setSpeakers(status.result.speakers);
       setSegments(status.result.transcript);
       setActionItems(status.result.action_items);
@@ -168,7 +170,7 @@ export const Transcript: React.FC = () => {
       setSegmentSaveStatus((prev) => ({ ...prev, [segmentId]: 'saved' }));
       setTimeout(() => {
         setSegmentSaveStatus((prev) => {
-          const { [segmentId]: _, ...rest } = prev;
+          const { [segmentId]: _removed, ...rest } = prev;
           return rest;
         });
       }, 2000);
@@ -202,13 +204,13 @@ export const Transcript: React.FC = () => {
   const tsParam = includeTimestamps ? '' : '?include_timestamps=false';
 
   const handleDownload = () => {
-    window.location.href = `/download/${jobId}/transcript.txt${tsParam}`;
+    window.location.href = assetUrl(`/download/${jobId}/transcript.txt${tsParam}`);
   };
 
   const handleExportDocx = async () => {
     setDocxGenerating(true);
     try {
-      const res  = await fetch(`/jobs/${jobId}/export/docx${tsParam}`);
+      const res  = await fetch(assetUrl(`/jobs/${jobId}/export/docx${tsParam}`));
       if (!res.ok) throw new Error('Failed');
       const blob = await res.blob();
       const url  = window.URL.createObjectURL(blob);
@@ -229,7 +231,7 @@ export const Transcript: React.FC = () => {
   const handleExportPdf = async () => {
     setPdfGenerating(true);
     try {
-      const res  = await fetch(`/jobs/${jobId}/export/pdf${tsParam}`);
+      const res  = await fetch(assetUrl(`/jobs/${jobId}/export/pdf${tsParam}`));
       if (!res.ok) throw new Error('Failed');
       const blob = await res.blob();
       const url  = window.URL.createObjectURL(blob);
@@ -252,6 +254,32 @@ export const Transcript: React.FC = () => {
     seg.text.toLowerCase().includes(search.toLowerCase()),
   );
 
+  const renderSegmentText = (segment: Segment) => {
+    if (!segment.words || segment.words.length === 0) {
+      return <span>{segment.text}</span>;
+    }
+    return (
+      <span>
+        {segment.words.map((word, idx) => {
+          const isActiveWord = currentTime >= word.start && currentTime < word.end;
+          return (
+            <span
+              key={word.word_id || idx}
+              style={{
+                background: isActiveWord ? 'rgba(99, 179, 237, 0.3)' : 'transparent',
+                borderRadius: '2px',
+                padding: '0 1px',
+                transition: 'background 80ms ease',
+              }}
+            >
+              {word.text}{' '}
+            </span>
+          );
+        })}
+      </span>
+    );
+  };
+
   // ── Loading / error states ────────────────────────────────────────────────────
   if (isLoading) {
     return (
@@ -261,7 +289,7 @@ export const Transcript: React.FC = () => {
     );
   }
 
-  if (isError || !status?.result) {
+  if (isError || !(status && isJobComplete(status))) {
     return (
       <div className="min-h-screen bg-bg flex items-center justify-center">
         <button onClick={() => navigate('/')} className="text-accent hover:underline">
@@ -290,20 +318,23 @@ export const Transcript: React.FC = () => {
                 </h1>
                 <p className="text-sm text-muted">
                   {result.segment_count} segments • {result.language} •{' '}
-                  {Math.floor(result.duration / 60)}:{String(Math.floor(result.duration % 60)).padStart(2, '0')}
+                  {result.duration != null ? `${Math.floor(result.duration / 60)}:${String(Math.floor(result.duration % 60)).padStart(2, '0')}` : '--:--'}
                 </p>
               </div>
               <div className="flex gap-2 items-center flex-wrap">
                 {/* Export panel */}
-                <div className="flex flex-col gap-1.5 p-2.5 bg-surface2 border border-subtle rounded">
+                <div role="group" aria-label="Export options" className="flex flex-col gap-1.5 p-2.5 bg-surface2 border border-subtle rounded">
                   {/* Timestamp toggle */}
                   <button
                     data-testid="timestamps-toggle"
+                    role="switch"
+                    aria-checked={includeTimestamps}
                     onClick={() => setIncludeTimestamps((v) => !v)}
                     className="flex items-center gap-2 group"
-                    aria-label="Toggle timestamps"
+                    aria-label="Include timestamps in export"
                   >
                     <div
+                      aria-hidden="true"
                       className={`relative w-7 h-3.5 rounded-full transition-colors duration-200 ease-in-out ${
                         includeTimestamps ? 'bg-accent' : 'bg-dim'
                       }`}
@@ -323,6 +354,7 @@ export const Transcript: React.FC = () => {
                     <button
                       data-testid="export-txt"
                       onClick={handleDownload}
+                      aria-label="Download transcript as TXT"
                       className="px-2.5 py-1 bg-surface border border-subtle text-white font-mono text-xs rounded hover:border-accent hover:bg-accent/10 transition"
                     >
                       ↓ TXT
@@ -331,6 +363,8 @@ export const Transcript: React.FC = () => {
                       data-testid="export-docx"
                       onClick={handleExportDocx}
                       disabled={docxGenerating}
+                      aria-label="Download transcript as DOCX"
+                      aria-busy={docxGenerating}
                       className="px-2.5 py-1 bg-surface border border-subtle text-white font-mono text-xs rounded hover:border-accent hover:bg-accent/10 transition disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {docxGenerating ? 'Generating…' : '↓ DOCX'}
@@ -339,6 +373,8 @@ export const Transcript: React.FC = () => {
                       data-testid="export-pdf"
                       onClick={handleExportPdf}
                       disabled={pdfGenerating}
+                      aria-label="Download transcript as PDF"
+                      aria-busy={pdfGenerating}
                       className="px-2.5 py-1 bg-surface border border-subtle text-white font-mono text-xs rounded hover:border-accent hover:bg-accent/10 transition disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {pdfGenerating ? 'Generating…' : '↓ PDF'}
@@ -375,7 +411,15 @@ export const Transcript: React.FC = () => {
         </div>
 
         {/* Hidden audio element — the AudioPlayer controls this via the ref */}
-        <audio ref={audioRef} src={`/audio/${jobId}`} preload="metadata" style={{ display: 'none' }} />
+        <audio ref={audioRef} src={assetUrl(`/audio/${jobId}`)} preload="metadata" style={{ display: 'none' }} />
+
+        {/* Screen-reader live region: announces current segment as playback advances */}
+        <div aria-live="polite" aria-atomic="true" className="sr-only">
+          {activeSegmentId && (() => {
+            const seg = segments.find((s) => s.segment_id === activeSegmentId);
+            return seg ? `${seg.speaker}: ${seg.text}` : null;
+          })()}
+        </div>
       </div>
 
       {/* ── Main content ──────────────────────────────────────────────────── */}
@@ -386,9 +430,16 @@ export const Transcript: React.FC = () => {
 
           {/* Search */}
           <div className="mb-6">
+            <label htmlFor="transcript-search" className="sr-only">
+              Search transcript segments
+            </label>
             <input
+              id="transcript-search"
               data-testid="search-input"
               type="search"
+              role="searchbox"
+              aria-controls="segment-list"
+              aria-label="Search transcript segments"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search segments..."
@@ -396,6 +447,13 @@ export const Transcript: React.FC = () => {
             />
           </div>
 
+          <div
+            id="segment-list"
+            role="list"
+            aria-live="polite"
+            aria-relevant="additions text"
+            className="space-y-2"
+          >
           {filteredSegments.map((segment) => {
             const speakerIdx   = speakers.findIndex((s) => s.speaker_id === segment.speaker_id);
             const speakerBgClass = SPEAKER_BG_CLASSES[speakerIdx % SPEAKER_BG_CLASSES.length] ?? 'bg-dim';
@@ -406,35 +464,42 @@ export const Transcript: React.FC = () => {
             return (
               <div
                 key={segment.segment_id}
+                role="listitem"
                 ref={(el) => {
                   if (el) segmentRefs.current.set(segment.segment_id, el);
                   else segmentRefs.current.delete(segment.segment_id);
                 }}
+                data-active={isActive || undefined}
                 data-highlighted={search.length > 0 ? 'true' : undefined}
-                className={`p-4 rounded border transition-[background-color,border-color] duration-150 ${
+                className={`p-4 rounded border ${
                   isActive
-                    ? 'border-accent bg-[rgba(99,179,237,0.08)]'
+                    ? 'border-accent'
                     : isPassed
                     ? 'border-dim/50'
                     : 'border-dim hover:border-accent'
                 }`}
-                style={isActive ? { borderLeftWidth: '3px' } : undefined}
+                style={{
+                  borderLeft: isActive ? '3px solid #63b3ed' : '3px solid transparent',
+                  background: isActive ? 'rgba(99, 179, 237, 0.08)' : 'transparent',
+                  transition: 'background 150ms ease, border-color 150ms ease',
+                }}
               >
                 <div className="flex gap-3 items-start mb-2">
 
                   {/* Timestamp — click seeks, hover shows play icon */}
                   <button
                     onClick={() => seek(segment.start)}
+                    aria-label={`Seek to ${segment.timestamp} — ${segment.speaker}`}
                     className="group flex items-center gap-1 font-mono text-accent hover:text-white transition text-sm shrink-0"
-                    title={`Seek to ${segment.timestamp}`}
                   >
-                    <span className="opacity-0 group-hover:opacity-100 transition-opacity text-xs">▶</span>
+                    <span aria-hidden="true" className="opacity-0 group-hover:opacity-100 transition-opacity text-xs">▶</span>
                     <span>[{segment.timestamp}]</span>
                   </button>
 
                   {/* Speaker chip */}
                   <div
                     data-testid="segment-speaker"
+                    aria-label={`Speaker: ${segment.speaker}`}
                     className={`px-2 py-1 rounded text-xs font-mono font-medium shrink-0 transition-opacity ${speakerBgClass} text-bg ${
                       isActive ? 'opacity-100' : 'opacity-80'
                     }`}
@@ -445,18 +510,29 @@ export const Transcript: React.FC = () => {
                   {/* Save status indicator */}
                   {segmentSaveStatus[segment.segment_id] && (
                     <div
+                      id={`save-status-${segment.segment_id}`}
+                      aria-live="polite"
                       data-testid="save-indicator"
                       data-status={segmentSaveStatus[segment.segment_id]}
                       className="text-xs ml-auto"
                     >
                       {segmentSaveStatus[segment.segment_id] === 'saving' && (
-                        <span className="text-accent">💾</span>
+                        <>
+                          <span aria-hidden="true" className="text-accent">💾</span>
+                          <span className="sr-only">Saving…</span>
+                        </>
                       )}
                       {segmentSaveStatus[segment.segment_id] === 'saved' && (
-                        <span className="text-green">✓</span>
+                        <>
+                          <span aria-hidden="true" className="text-green">✓</span>
+                          <span className="sr-only">Saved</span>
+                        </>
                       )}
                       {segmentSaveStatus[segment.segment_id] === 'error' && (
-                        <span className="text-red">⚠</span>
+                        <>
+                          <span aria-hidden="true" className="text-red">⚠</span>
+                          <span className="sr-only">Save failed</span>
+                        </>
                       )}
                     </div>
                   )}
@@ -466,6 +542,8 @@ export const Transcript: React.FC = () => {
                 {editingSegmentId === segment.segment_id ? (
                   <div className="space-y-2">
                     <textarea
+                      aria-label={`Edit segment text for ${segment.speaker} at ${segment.timestamp}`}
+                      aria-describedby={segmentSaveStatus[segment.segment_id] ? `save-status-${segment.segment_id}` : undefined}
                       value={editingSegmentText}
                       onChange={(e) => setEditingSegmentText(e.target.value)}
                       onBlur={() => saveSegmentEdit(segment.segment_id)}
@@ -505,13 +583,14 @@ export const Transcript: React.FC = () => {
                         ),
                       )
                     ) : (
-                      segment.text
+                      renderSegmentText(segment)
                     )}
                   </p>
                 )}
               </div>
             );
           })}
+          </div>
         </div>
 
         {/* ── Sidebar ─────────────────────────────────────────────────────── */}
@@ -532,6 +611,7 @@ export const Transcript: React.FC = () => {
                     <div className="flex gap-2 flex-1">
                       <input
                         type="text"
+                        aria-label={`Rename speaker ${speaker.display_name}. Press Enter to save, Escape to cancel.`}
                         value={renamingSpeakerName}
                         onChange={(e) => setRenamingSpeakerName(e.target.value)}
                         onKeyDown={(e) => {

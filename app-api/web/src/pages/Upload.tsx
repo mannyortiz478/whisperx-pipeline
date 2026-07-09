@@ -1,13 +1,31 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import axios from 'axios';
+import { apiUpload } from '../lib/api';
 import { apiClient } from '../utils/api';
 
 const MAX_FILE_BYTES = 100 * 1024 * 1024; // 100 MB client-side guard
+const ALLOWED_EXTS = new Set(['mp3', 'mp4', 'wav', 'm4a', 'ogg', 'flac', 'webm', 'mkv']);
+const ALLOWED_TYPES = new Set([
+  'audio/mpeg', 'audio/mp4', 'audio/wav', 'audio/x-wav', 'audio/wave',
+  'audio/ogg', 'audio/flac', 'audio/x-flac', 'audio/webm', 'audio/x-m4a',
+  'video/mp4', 'video/webm', 'video/x-matroska', 'video/quicktime',
+]);
+
+function validateFile(f: File): string | null {
+  const ext = f.name.split('.').pop()?.toLowerCase() ?? '';
+  if (!ALLOWED_EXTS.has(ext) && !ALLOWED_TYPES.has(f.type)) {
+    return `Unsupported file type. Allowed formats: MP3, MP4, WAV, M4A, OGG, FLAC, WEBM, MKV`;
+  }
+  if (f.size > MAX_FILE_BYTES) {
+    return `File too large (${(f.size / 1024 / 1024).toFixed(0)} MB). Maximum allowed size is 100 MB.`;
+  }
+  return null;
+}
 
 export const Upload: React.FC = () => {
-  const navigate = useNavigate();
+  const navigate     = useNavigate();
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [model, setModel] = useState('base');
   const [hfToken, setHfToken] = useState('');
@@ -47,8 +65,9 @@ export const Upload: React.FC = () => {
     e.stopPropagation();
     setDragActive(false);
     if (e.dataTransfer.files?.[0]) {
-      setFile(e.dataTransfer.files[0]);
-      setErrorMsg('');
+      const err = validateFile(e.dataTransfer.files[0]);
+      if (err) { setErrorMsg(err); setFile(null); }
+      else { setFile(e.dataTransfer.files[0]); setErrorMsg(''); }
     }
   };
 
@@ -69,16 +88,10 @@ export const Upload: React.FC = () => {
       formData.append('transcription_model', model);
       if (hfToken) formData.append('hf_token', hfToken);
 
-      const response = await axios.post<{ job_id: string }>('/upload', formData, {
-        onUploadProgress: (e) => {
-          if (e.total) setUploadProgress(Math.round((e.loaded / e.total) * 100));
-        },
-      });
-      navigate(`/jobs/${response.data.job_id}`);
-    } catch (error: any) {
-      const serverMsg =
-        error?.response?.data?.error ||
-        (error instanceof Error ? error.message : 'Unknown error');
+      const response = await apiUpload('/upload', formData, setUploadProgress) as { job_id: string };
+      navigate(`/jobs/${response.job_id}`);
+    } catch (error: unknown) {
+      const serverMsg = error instanceof Error ? error.message : 'Unknown error';
       setErrorMsg(`Upload failed: ${serverMsg}`);
       setUploading(false);
       setUploadProgress(0);
@@ -112,6 +125,15 @@ export const Upload: React.FC = () => {
 
           {/* Drag and Drop Zone */}
           <div
+            role="button"
+            tabIndex={0}
+            aria-label="Upload audio file. Press Enter or Space to browse files."
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                fileInputRef.current?.click();
+              }
+            }}
             onDragEnter={handleDrag}
             onDragLeave={handleDrag}
             onDragOver={handleDrag}
@@ -137,23 +159,32 @@ export const Upload: React.FC = () => {
                 )}
               </div>
               {!file && (
-                <label className="inline-block">
+                <>
+                  <label htmlFor="file-upload" className="sr-only">
+                    Choose audio file (MP3, MP4, WAV, M4A, OGG, FLAC, WEBM, MKV)
+                  </label>
                   <input
+                    ref={fileInputRef}
+                    id="file-upload"
                     data-testid="file-input"
                     type="file"
                     accept="audio/*,video/*,.mp3,.mp4,.wav,.m4a,.ogg,.flac,.webm,.mkv"
+                    aria-describedby={errorMsg ? 'file-error' : undefined}
                     onChange={(e) => {
                       if (e.target.files?.[0]) {
-                        setFile(e.target.files[0]);
-                        setErrorMsg('');
+                        const err = validateFile(e.target.files[0]);
+                        if (err) { setErrorMsg(err); setFile(null); }
+                        else { setFile(e.target.files[0]); setErrorMsg(''); }
                       }
                     }}
                     className="hidden"
                   />
-                  <span className="px-4 py-2 bg-accent text-bg font-sans font-medium rounded hover:opacity-90 transition inline-block cursor-pointer">
-                    Select File
-                  </span>
-                </label>
+                  <label htmlFor="file-upload" className="inline-block cursor-pointer">
+                    <span className="px-4 py-2 bg-accent text-bg font-sans font-medium rounded hover:opacity-90 transition inline-block">
+                      Select File
+                    </span>
+                  </label>
+                </>
               )}
             </div>
           </div>
@@ -161,6 +192,9 @@ export const Upload: React.FC = () => {
           {/* Inline error message */}
           {errorMsg && (
             <div
+              role="alert"
+              aria-live="polite"
+              id="file-error"
               data-testid="upload-error"
               className="p-3 bg-red/10 border border-red rounded text-red text-sm font-sans"
             >
@@ -170,10 +204,11 @@ export const Upload: React.FC = () => {
 
           {/* Model Selection */}
           <div>
-            <label className="block text-sm font-mono text-muted mb-2">
+            <label htmlFor="model-select" className="block text-sm font-mono text-muted mb-2">
               Transcription Model
             </label>
             <select
+              id="model-select"
               value={model}
               onChange={(e) => setModel(e.target.value)}
               className="w-full bg-surface2 border border-subtle text-white px-4 py-2 rounded font-sans focus:outline-none focus:border-accent transition"
@@ -191,11 +226,12 @@ export const Upload: React.FC = () => {
 
           {/* HF Token */}
           <div>
-            <label className="block text-sm font-mono text-muted mb-2">
-              HuggingFace Token (optional)
+            <label htmlFor="hf-token" className="block text-sm font-mono text-muted mb-2">
+              HuggingFace Token (optional, for speaker diarization)
             </label>
             <div className="relative">
               <input
+                id="hf-token"
                 type={showToken ? 'text' : 'password'}
                 value={hfToken}
                 onChange={(e) => setHfToken(e.target.value)}
@@ -219,6 +255,8 @@ export const Upload: React.FC = () => {
             data-testid="upload-btn"
             onClick={handleUpload}
             disabled={!file || uploading || !speechApiHealthy}
+            aria-disabled={!file || uploading || !speechApiHealthy}
+            aria-describedby="upload-hint"
             className={`w-full py-3 font-sans font-medium rounded transition ${
               file && !uploading && speechApiHealthy
                 ? 'bg-accent text-bg hover:opacity-90 cursor-pointer'
@@ -227,6 +265,9 @@ export const Upload: React.FC = () => {
           >
             {uploading ? 'Uploading...' : 'Upload & Transcribe'}
           </button>
+          <span id="upload-hint" className="sr-only">
+            {!file ? 'Select a file before uploading' : ''}
+          </span>
 
           {/* Upload Progress */}
           {uploading && (
@@ -237,6 +278,11 @@ export const Upload: React.FC = () => {
               </div>
               <div
                 data-testid="upload-progress"
+                role="progressbar"
+                aria-valuenow={uploadProgress}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-label="Upload progress"
                 className="w-full bg-surface rounded-full h-2 overflow-hidden"
               >
                 <div

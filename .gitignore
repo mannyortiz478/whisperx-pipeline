@@ -15,6 +15,7 @@ shared/pipeline.db
 !shared/outputs/.gitkeep
 
 # Node / Vite
+node_modules/
 app-api/web/node_modules/
 app-api/web/dist/
 app-api/web/dist-ssr/

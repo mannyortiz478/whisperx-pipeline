@@ -10,13 +10,46 @@ import json
 import os
 import re
 import tempfile
+import time
 import traceback
+import uuid as _uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException
+from starlette.middleware.base import BaseHTTPMiddleware
+
+from logger import logger
 
 app = FastAPI(title="Speech Processing API", version="1.0.0")
+
+
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        request_id = request.headers.get('X-Request-ID') or _uuid.uuid4().hex[:16]
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers['X-Request-ID'] = request_id
+        return response
+
+
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        start = time.time()
+        response = await call_next(request)
+        duration_ms = round((time.time() - start) * 1000)
+        logger.info('http_request', extra={
+            'request_id':  getattr(request.state, 'request_id', None),
+            'method':      request.method,
+            'path':        request.url.path,
+            'status':      response.status_code,
+            'duration_ms': duration_ms,
+        })
+        return response
+
+
+app.add_middleware(RequestIDMiddleware)
+app.add_middleware(RequestLoggingMiddleware)
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -87,7 +120,7 @@ def extract_action_items(segments: list, speaker_labels: dict) -> list:
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 
     if anthropic_key:
-        print("Using Claude for action extraction")
+        logger.info('action_extraction_method', extra={'method': 'claude'})
         try:
             from anthropic import Anthropic  # lazy import — optional dependency
 
@@ -117,9 +150,9 @@ def extract_action_items(segments: list, speaker_labels: dict) -> list:
             if isinstance(items, list):
                 return items[:25]
         except Exception as exc:
-            print(f"Claude extraction failed ({exc}), falling back to regex")
+            logger.error('claude_extraction_failed', extra={'error': str(exc)}, exc_info=True)
 
-    print("Using regex fallback for action extraction")
+    logger.info('action_extraction_method', extra={'method': 'regex'})
     return _regex_extract(segments, speaker_labels)
 
 
@@ -142,6 +175,7 @@ def models():
 
 @app.post("/process-audio")
 async def process_audio(
+    request:               Request,
     file:                  UploadFile       = File(...),
     transcription_model:   str              = Form(DEFAULT_MODEL),
     enable_diarization:    bool             = Form(True),
@@ -165,6 +199,8 @@ async def process_audio(
         tmp.write(await file.read())
         tmp_path = tmp.name
 
+    request_id = getattr(request.state, 'request_id', None)
+
     try:
         import whisperx
         import torch
@@ -172,6 +208,14 @@ async def process_audio(
 
         device       = "cuda" if torch.cuda.is_available() else "cpu"
         compute_type = "float16" if device == "cuda" else "int8"
+
+        logger.info('processing_started', extra={
+            'request_id':           request_id,
+            'filename':             file.filename,
+            'transcription_model':  transcription_model,
+            'device':               device,
+            'enable_diarization':   enable_diarization,
+        })
 
         # 1. Transcribe
         model  = whisperx.load_model(transcription_model, device, compute_type=compute_type)
@@ -186,6 +230,12 @@ async def process_audio(
             result["segments"], model_a, metadata, audio, device,
             return_char_alignments=False,
         )
+
+        logger.info('transcription_complete', extra={
+            'request_id':    request_id,
+            'segment_count': len(result.get('segments', [])),
+            'language':      result.get('language'),
+        })
 
         # 3. Diarize
         if enable_diarization and token:
@@ -205,7 +255,12 @@ async def process_audio(
             if lbl not in seen_labels:
                 seen_labels.append(lbl)
 
-        speakers      = [{"speaker_id": lbl, "label": f"Speaker {i + 1}"} for i, lbl in enumerate(seen_labels)]
+        logger.info('diarization_complete', extra={
+            'request_id':    request_id,
+            'speaker_count': len(seen_labels),
+        })
+
+        speakers       = [{"speaker_id": lbl, "label": f"Speaker {i + 1}"} for i, lbl in enumerate(seen_labels)]
         speaker_labels = {sp["speaker_id"]: sp["label"] for sp in speakers}
 
         segments_out = []
@@ -232,6 +287,11 @@ async def process_audio(
         duration     = raw_segments[-1]["end"] if raw_segments else 0
         action_items = extract_action_items(raw_segments, speaker_labels)
 
+        logger.info('action_items_extracted', extra={
+            'request_id': request_id,
+            'count':      len(action_items),
+        })
+
         return {
             "language":            result.get("language", "unknown"),
             "transcription_model": transcription_model,
@@ -242,6 +302,12 @@ async def process_audio(
         }
 
     except Exception as e:
+        logger.error('processing_failed', extra={
+            'request_id': request_id,
+            'filename':   file.filename,
+            'model':      transcription_model,
+            'error':      str(e),
+        }, exc_info=True)
         raise HTTPException(status_code=500, detail={
             "code":      "PROCESSING_FAILED",
             "message":   str(e),
@@ -256,5 +322,10 @@ async def process_audio(
 
 if __name__ == "__main__":
     import uvicorn
-    print("\n Speech Processing API — http://localhost:8000\n")
+    logger.info('speech_api_starting', extra={
+        'port':              8000,
+        'default_model':     DEFAULT_MODEL,
+        'models_available':  SUPPORTED_MODELS,
+        'hf_token_set':      bool(HF_TOKEN),
+    })
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

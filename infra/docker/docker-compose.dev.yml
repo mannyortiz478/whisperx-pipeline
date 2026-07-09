@@ -1,0 +1,31 @@
+version: "3.9"
+
+services:
+
+  speech-api:
+    build:
+      context: ../../speech-api
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ../../speech-api:/app
+      - speech_model_cache:/app/models
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  app-api:
+    build:
+      context: ../../app-api
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ../../app-api:/app
+      - shared_data:/shared
+    command: python app.py
+
+volumes:
+  shared_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ../../shared
+  speech_model_cache:
+    driver: local

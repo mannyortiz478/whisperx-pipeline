@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { assetUrl } from '../lib/api';
 import { apiClient } from '../utils/api';
 
 export const History: React.FC = () => {
@@ -119,7 +120,7 @@ export const History: React.FC = () => {
 
     if (fmt === 'txt') {
       const link = document.createElement('a');
-      link.href = `/download/${jobId}/transcript.txt${tsParam}`;
+      link.href = assetUrl(`/download/${jobId}/transcript.txt${tsParam}`);
       link.setAttribute('download', `transcript_${jobId}.txt`);
       document.body.appendChild(link);
       link.click();
@@ -128,7 +129,7 @@ export const History: React.FC = () => {
     }
     setGeneratingExport((prev) => ({ ...prev, [jobId]: fmt }));
     try {
-      const res = await fetch(`/jobs/${jobId}/export/${fmt}${tsParam}`);
+      const res = await fetch(assetUrl(`/jobs/${jobId}/export/${fmt}${tsParam}`));
       if (!res.ok) throw new Error('Failed');
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
@@ -209,7 +210,7 @@ export const History: React.FC = () => {
         </div>
 
         {!jobs || jobs.length === 0 ? (
-          <div className="text-center py-16">
+          <div role="status" aria-live="polite" className="text-center py-16">
             <div className="text-5xl mb-4">📭</div>
             <p className="text-white font-sans text-lg mb-2">No transcriptions yet</p>
             <p className="text-muted text-sm mb-6">Start by uploading an audio file</p>
@@ -221,21 +222,25 @@ export const History: React.FC = () => {
             </button>
           </div>
         ) : (
-          <div className="space-y-2 overflow-x-auto">
+          <div role="table" aria-label="Transcription job history" className="space-y-2 overflow-x-auto">
             {/* Table Header */}
-            <div className="hidden sm:grid sm:grid-cols-12 gap-4 p-4 bg-surface2 border border-subtle rounded-t font-mono text-xs text-muted">
-              <div className="col-span-3">File</div>
-              <div className="col-span-2">Date</div>
-              <div className="col-span-1">Duration</div>
-              <div className="col-span-1">Model</div>
-              <div className="col-span-1">Language</div>
-              <div className="col-span-1">Status</div>
-              <div className="col-span-3">Actions</div>
+            <div role="rowgroup">
+              <div role="row" className="hidden sm:grid sm:grid-cols-12 gap-4 p-4 bg-surface2 border border-subtle rounded-t font-mono text-xs text-muted">
+                <div role="columnheader" className="col-span-3">File</div>
+                <div role="columnheader" className="col-span-2">Date</div>
+                <div role="columnheader" className="col-span-1">Duration</div>
+                <div role="columnheader" className="col-span-1">Model</div>
+                <div role="columnheader" className="col-span-1">Language</div>
+                <div role="columnheader" className="col-span-1">Status</div>
+                <div role="columnheader" className="col-span-3">Actions</div>
+              </div>
             </div>
 
             {/* Table Rows */}
+            <div role="rowgroup">
             {jobs.map((job, idx) => (
               <div
+                role="row"
                 key={job.job_id}
                 className={`p-4 border border-subtle rounded hover:border-accent transition cursor-pointer ${
                   idx % 2 === 0 ? 'bg-surface' : 'bg-surface2'
@@ -272,18 +277,18 @@ export const History: React.FC = () => {
                   </div>
                   <div className="flex items-center justify-between pt-2 border-t border-dim">
                     <span
-                      className={`px-2 py-1 rounded text-xs font-mono font-medium border ${getStatusColor(
-                        job.status
-                      )}`}
+                      role="status"
+                      aria-label={`Job status: ${job.status}`}
+                      className={`px-2 py-1 rounded text-xs font-mono font-medium border ${getStatusColor(job.status)}`}
                     >
                       {job.status}
                     </span>
                     <div className="flex gap-2 items-center flex-wrap">
                       {job.status === 'completed' && (
                         <>
-                          {/* Compact timestamp toggle */}
                           <button
                             onClick={(e) => toggleTimestamps(e, job.job_id)}
+                            aria-label={noTimestamps.has(job.job_id) ? `Enable timestamps for ${job.filename}` : `Disable timestamps for ${job.filename}`}
                             title={noTimestamps.has(job.job_id) ? 'Timestamps off' : 'Timestamps on'}
                             className={`font-mono text-[10px] px-1.5 py-0.5 rounded border transition ${
                               noTimestamps.has(job.job_id)
@@ -295,6 +300,7 @@ export const History: React.FC = () => {
                           </button>
                           <button
                             onClick={(e) => handleExport(e, job.job_id, 'txt')}
+                            aria-label={`Download TXT for ${job.filename}`}
                             className="text-muted hover:text-accent transition font-mono text-xs"
                           >
                             ↓txt
@@ -302,6 +308,7 @@ export const History: React.FC = () => {
                           <button
                             onClick={(e) => handleExport(e, job.job_id, 'docx')}
                             disabled={generatingExport[job.job_id] === 'docx'}
+                            aria-label={`Download DOCX for ${job.filename}`}
                             className="text-muted hover:text-accent transition font-mono text-xs disabled:opacity-40"
                           >
                             {generatingExport[job.job_id] === 'docx' ? '…' : '↓docx'}
@@ -309,6 +316,7 @@ export const History: React.FC = () => {
                           <button
                             onClick={(e) => handleExport(e, job.job_id, 'pdf')}
                             disabled={generatingExport[job.job_id] === 'pdf'}
+                            aria-label={`Download PDF for ${job.filename}`}
                             className="text-muted hover:text-accent transition font-mono text-xs disabled:opacity-40"
                           >
                             {generatingExport[job.job_id] === 'pdf' ? '…' : '↓pdf'}
@@ -325,6 +333,7 @@ export const History: React.FC = () => {
                           <button
                             onClick={(e) => handleRetry(e, job.job_id)}
                             disabled={retryingId === job.job_id}
+                            aria-label={`Retry failed job for ${job.filename}`}
                             className="text-accent hover:text-white transition font-mono text-xs disabled:opacity-50"
                           >
                             {retryingId === job.job_id ? '…' : 'Retry'}
@@ -332,11 +341,9 @@ export const History: React.FC = () => {
                         </>
                       )}
                       <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDelete(job.job_id);
-                        }}
+                        onClick={(e) => { e.stopPropagation(); handleDelete(job.job_id); }}
                         disabled={deletingId === job.job_id}
+                        aria-label={`Delete job for ${job.filename}`}
                         className="text-red opacity-60 hover:opacity-100 transition text-xs"
                       >
                         {deletingId === job.job_id ? '...' : '🗑'}
@@ -364,6 +371,8 @@ export const History: React.FC = () => {
                   </div>
                   <div className="col-span-1">
                     <span
+                      role="status"
+                      aria-label={`Job status: ${job.status}`}
                       className={`px-2 py-1 rounded text-xs font-mono font-medium border inline-block ${getStatusColor(
                         job.status
                       )}`}
@@ -379,6 +388,7 @@ export const History: React.FC = () => {
                             e.stopPropagation();
                             navigate(`/jobs/${job.job_id}/transcript`);
                           }}
+                          aria-label={`View transcript for ${job.filename}`}
                           className="text-accent hover:text-white transition font-mono text-xs"
                         >
                           View
@@ -386,6 +396,7 @@ export const History: React.FC = () => {
                         {/* Compact timestamp toggle */}
                         <button
                           onClick={(e) => toggleTimestamps(e, job.job_id)}
+                          aria-label={noTimestamps.has(job.job_id) ? `Enable timestamps for ${job.filename}` : `Disable timestamps for ${job.filename}`}
                           title={noTimestamps.has(job.job_id) ? 'Timestamps off — click to enable' : 'Timestamps on — click to disable'}
                           className={`font-mono text-[10px] px-1.5 py-0.5 rounded border transition ${
                             noTimestamps.has(job.job_id)
@@ -397,24 +408,26 @@ export const History: React.FC = () => {
                         </button>
                         <button
                           onClick={(e) => handleExport(e, job.job_id, 'txt')}
+                          aria-label={`Download TXT for ${job.filename}`}
                           className="text-muted hover:text-accent transition font-mono text-xs"
-                          title="Download TXT"
                         >
                           ↓txt
                         </button>
                         <button
                           onClick={(e) => handleExport(e, job.job_id, 'docx')}
                           disabled={generatingExport[job.job_id] === 'docx'}
+                          aria-label={`Download DOCX for ${job.filename}`}
+                          aria-busy={generatingExport[job.job_id] === 'docx'}
                           className="text-muted hover:text-accent transition font-mono text-xs disabled:opacity-40"
-                          title="Download DOCX"
                         >
                           {generatingExport[job.job_id] === 'docx' ? '…' : '↓docx'}
                         </button>
                         <button
                           onClick={(e) => handleExport(e, job.job_id, 'pdf')}
                           disabled={generatingExport[job.job_id] === 'pdf'}
+                          aria-label={`Download PDF for ${job.filename}`}
+                          aria-busy={generatingExport[job.job_id] === 'pdf'}
                           className="text-muted hover:text-accent transition font-mono text-xs disabled:opacity-40"
-                          title="Download PDF"
                         >
                           {generatingExport[job.job_id] === 'pdf' ? '…' : '↓pdf'}
                         </button>
@@ -430,6 +443,7 @@ export const History: React.FC = () => {
                         <button
                           onClick={(e) => handleRetry(e, job.job_id)}
                           disabled={retryingId === job.job_id}
+                          aria-label={`Retry failed job for ${job.filename}`}
                           className="text-accent hover:text-white transition font-mono text-xs disabled:opacity-50"
                         >
                           {retryingId === job.job_id ? '…' : 'Retry'}
@@ -442,6 +456,7 @@ export const History: React.FC = () => {
                         handleDelete(job.job_id);
                       }}
                       disabled={deletingId === job.job_id}
+                      aria-label={`Delete job for ${job.filename}`}
                       className="text-red opacity-60 hover:opacity-100 transition font-mono text-xs disabled:opacity-50 ml-auto"
                     >
                       {deletingId === job.job_id ? '...' : 'Delete'}
@@ -450,6 +465,7 @@ export const History: React.FC = () => {
                 </div>
               </div>
             ))}
+            </div>
           </div>
         )}
       </div>

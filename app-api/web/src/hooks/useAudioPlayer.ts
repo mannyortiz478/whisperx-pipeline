@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
 import type { RefObject } from 'react';
-import type { Segment } from '../utils/api';
+import type { TranscriptSegment as Segment } from '@whisperx/shared-types';
 
 export const RATES = [0.5, 0.75, 1, 1.25, 1.5, 2];
 

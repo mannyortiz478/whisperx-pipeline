@@ -1,0 +1,62 @@
+version: "3.9"
+
+services:
+
+  speech-api:
+    build:
+      context: ../../speech-api
+      dockerfile: Dockerfile
+    ports:
+      - "${SPEECH_API_PORT:-8000}:8000"
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-base}
+      - TRANSCRIPTION_MODEL_NAMES=${TRANSCRIPTION_MODEL_NAMES:-tiny,base,small,medium,large-v3}
+      - SPEECH_API_PORT=8000
+    volumes:
+      # Cache downloaded WhisperX and pyannote models between restarts
+      - speech_model_cache:/app/models
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  app-api:
+    build:
+      context: ../../app-api
+      dockerfile: Dockerfile
+    ports:
+      - "${APP_API_PORT:-5001}:5001"
+    environment:
+      - SPEECH_API_BASE_URL=http://speech-api:8000
+      - DATABASE_URL=sqlite:////shared/pipeline.db
+      - SHARED_DIR=/shared
+      - MAX_UPLOAD_BYTES=${MAX_UPLOAD_BYTES:-209715200}
+      - MAX_MEDIA_DURATION_SECONDS=${MAX_MEDIA_DURATION_SECONDS:-10800}
+      - HF_TOKEN=${HF_TOKEN}
+    volumes:
+      - shared_data:/shared
+    depends_on:
+      speech-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  shared_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ../../shared
+  speech_model_cache:
+    driver: local

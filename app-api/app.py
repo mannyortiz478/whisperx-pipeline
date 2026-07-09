@@ -8,6 +8,7 @@ Then open http://localhost:5001 in your browser
 """
 
 import os
+import time
 import uuid
 import shutil
 import threading
@@ -15,15 +16,17 @@ import requests
 from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Flask, render_template, request, jsonify, send_from_directory
+from flask import Flask, render_template, request, jsonify, send_from_directory, g
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
+
+from logger import logger
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
 
-BASE_DIR    = Path(__file__).parent.parent / "shared"
+BASE_DIR    = Path(os.environ.get("SHARED_DIR", str(Path(__file__).parent.parent / "shared")))
 UPLOAD_DIR  = BASE_DIR / "uploads"
 OUTPUT_DIR  = BASE_DIR / "outputs"
 
@@ -40,6 +43,25 @@ db = SQLAlchemy(app)
 
 # Live progress (only populated while a job is running)
 progress_store: dict = {}
+
+
+# ─── Request middleware ───────────────────────────────────────────────────────
+
+@app.before_request
+def attach_request_id():
+    g.request_id = request.headers.get('X-Request-ID') or uuid.uuid4().hex[:16]
+
+
+@app.after_request
+def log_request(response):
+    logger.info('http_request', extra={
+        'request_id': getattr(g, 'request_id', None),
+        'method':     request.method,
+        'path':       request.path,
+        'status':     response.status_code,
+        'ip':         request.remote_addr,
+    })
+    return response
 
 
 # ─── Models ──────────────────────────────────────────────────────────────────
@@ -59,9 +81,10 @@ class Job(db.Model):
     completed_at        = db.Column(db.DateTime)
     failed_at           = db.Column(db.DateTime)
 
-    speakers = db.relationship("Speaker",    back_populates="job", cascade="all, delete-orphan")
-    segments = db.relationship("Segment",    back_populates="job", cascade="all, delete-orphan", order_by="Segment.start")
-    actions  = db.relationship("ActionItem", back_populates="job", cascade="all, delete-orphan")
+    speakers = db.relationship("Speaker",        back_populates="job", cascade="all, delete-orphan")
+    segments = db.relationship("Segment",        back_populates="job", cascade="all, delete-orphan", order_by="Segment.start")
+    actions  = db.relationship("ActionItem",     back_populates="job", cascade="all, delete-orphan")
+    words    = db.relationship("TranscriptWord", back_populates="job", cascade="all, delete-orphan")
 
     def to_summary(self):
         return {
@@ -106,6 +129,12 @@ class Segment(db.Model):
     updated_at    = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     job           = db.relationship("Job", back_populates="segments")
     speaker       = db.relationship("Speaker", back_populates="segments")
+    words         = db.relationship(
+        "TranscriptWord",
+        back_populates="segment",
+        cascade="all, delete-orphan",
+        order_by="TranscriptWord.word_index",
+    )
 
     def to_dict(self):
         return {
@@ -116,6 +145,7 @@ class Segment(db.Model):
             "end":        self.end,
             "text":       self.text,
             "timestamp":  format_timestamp(self.start),
+            "words":      [w.to_dict() for w in self.words],
         }
 
 
@@ -138,6 +168,33 @@ class ActionItem(db.Model):
             "priority":  self.priority,
             "timestamp": self.timestamp,
             "due_date":  self.due_date,
+        }
+
+
+class TranscriptWord(db.Model):
+    __tablename__ = "transcript_words"
+
+    id         = db.Column(db.String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    segment_id = db.Column(db.String, db.ForeignKey("segments.id"),  nullable=False)
+    job_id     = db.Column(db.String, db.ForeignKey("jobs.id"),      nullable=False)
+    text       = db.Column(db.String, nullable=False)
+    start      = db.Column(db.Float,  nullable=False)
+    end        = db.Column(db.Float,  nullable=False)
+    confidence = db.Column(db.Float)
+    word_index = db.Column(db.Integer)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    segment = db.relationship("Segment", back_populates="words")
+    job     = db.relationship("Job",     back_populates="words")
+
+    def to_dict(self):
+        return {
+            "word_id":    self.id,
+            "text":       self.text,
+            "start":      self.start,
+            "end":        self.end,
+            "confidence": self.confidence,
+            "word_index": self.word_index,
         }
 
 
@@ -169,6 +226,10 @@ def run_job(job_id: str, filepath: str, hf_token: str | None, transcription_mode
             job.started_at = datetime.now(timezone.utc)
             db.session.commit()
 
+            logger.info('job_started', extra={
+                'job_id': job_id,
+                'model':  transcription_model,
+            })
             set_progress(job_id, "processing", 10, "Sending to speech processing API...")
 
             # Check speech-api is reachable
@@ -182,7 +243,12 @@ def run_job(job_id: str, filepath: str, hf_token: str | None, transcription_mode
 
             set_progress(job_id, "processing", 20, "Transcribing audio (this may take a while)...")
 
-            # Send file to speech-api
+            logger.info('calling_speech_api', extra={
+                'job_id': job_id,
+                'url':    f'{SPEECH_API_URL}/process-audio',
+            })
+
+            speech_start = time.time()
             with open(filepath, "rb") as f:
                 resp = requests.post(
                     f"{SPEECH_API_URL}/process-audio",
@@ -196,6 +262,12 @@ def run_job(job_id: str, filepath: str, hf_token: str | None, transcription_mode
                     timeout=7200,  # 2 hours max
                 )
 
+            logger.info('speech_api_response', extra={
+                'job_id':      job_id,
+                'status_code': resp.status_code,
+                'duration_ms': round((time.time() - speech_start) * 1000),
+            })
+
             if resp.status_code != 200:
                 detail = resp.json().get("detail", {})
                 msg = detail.get("message", str(detail)) if isinstance(detail, dict) else str(detail)
@@ -203,6 +275,12 @@ def run_job(job_id: str, filepath: str, hf_token: str | None, transcription_mode
 
             data = resp.json()
             set_progress(job_id, "processing", 85, "Saving results to database...")
+
+            logger.info('saving_results', extra={
+                'job_id':        job_id,
+                'segment_count': len(data.get('segments', [])),
+                'speaker_count': len(data.get('speakers', [])),
+            })
 
             # Map speech-api speaker_ids to DB Speaker rows
             speaker_map: dict[str, Speaker] = {}
@@ -216,10 +294,10 @@ def run_job(job_id: str, filepath: str, hf_token: str | None, transcription_mode
                 db.session.flush()
                 speaker_map[sp["speaker_id"]] = db_speaker
 
-            # Create Segment rows
+            # Create Segment rows and persist word-level timestamps
             for seg in data.get("segments", []):
                 sp = speaker_map.get(seg["speaker_id"])
-                db.session.add(Segment(
+                db_segment = Segment(
                     job_id=job_id,
                     speaker_id=sp.id if sp else None,
                     start=seg["start_seconds"],
@@ -227,7 +305,22 @@ def run_job(job_id: str, filepath: str, hf_token: str | None, transcription_mode
                     text=seg["text"],
                     original_text=seg["text"],
                     confidence=seg.get("confidence"),
-                ))
+                )
+                db.session.add(db_segment)
+                db.session.flush()  # get db_segment.id before adding words
+
+                for word_idx, word in enumerate(seg.get("words", [])):
+                    if not word.get("text"):
+                        continue
+                    db.session.add(TranscriptWord(
+                        segment_id=db_segment.id,
+                        job_id=job_id,
+                        text=word["text"],
+                        start=word.get("start_seconds", 0),
+                        end=word.get("end_seconds", 0),
+                        confidence=word.get("confidence"),
+                        word_index=word_idx,
+                    ))
 
             # Create ActionItem rows
             # GPT-4o returns "assignee" directly; regex returns "speaker_label" (SPEAKER_XX id)
@@ -266,9 +359,18 @@ def run_job(job_id: str, filepath: str, hf_token: str | None, transcription_mode
             job.completed_at = datetime.now(timezone.utc)
             db.session.commit()
 
+            logger.info('job_completed', extra={
+                'job_id':   job_id,
+                'duration': job.duration,
+                'language': job.language,
+            })
             set_progress(job_id, "done", 100, "Complete!")
 
         except Exception as e:
+            logger.error('job_failed', extra={
+                'job_id': job_id,
+                'error':  str(e),
+            }, exc_info=True)
             with app.app_context():
                 j = db.session.get(Job, job_id)
                 if j:
@@ -280,33 +382,6 @@ def run_job(job_id: str, filepath: str, hf_token: str | None, transcription_mode
 
 
 # ─── Routes ──────────────────────────────────────────────────────────────────
-
-@app.route("/")
-def index():
-    web_dist = Path(__file__).parent / "web" / "dist" / "index.html"
-    if web_dist.exists():
-        return send_from_directory(
-            str(Path(__file__).parent / "web" / "dist"),
-            "index.html",
-        )
-    return render_template("index.html")
-
-
-@app.route("/<path:path>")
-def serve_react(path: str):
-    """Serve React app for all non-API routes"""
-    web_dist = Path(__file__).parent / "web" / "dist"
-    
-    # If the path is a file in dist, serve it
-    if (web_dist / path).exists() and (web_dist / path).is_file():
-        return send_from_directory(str(web_dist), path)
-    
-    # Otherwise, serve index.html (for React Router)
-    if (web_dist / "index.html").exists():
-        return send_from_directory(str(web_dist), "index.html")
-    
-    return render_template("index.html")
-
 
 @app.route("/health")
 def health():
@@ -362,6 +437,13 @@ def upload():
     ))
     db.session.commit()
     set_progress(job_id, "queued", 0, "Job queued...")
+
+    logger.info('job_created', extra={
+        'request_id':    getattr(g, 'request_id', None),
+        'job_id':        job_id,
+        'job_filename':  filename,
+        'model':         model,
+    })
 
     threading.Thread(
         target=run_job,
@@ -430,6 +512,7 @@ def delete_job(job_id):
     db.session.delete(job)
     db.session.commit()
     progress_store.pop(job_id, None)
+    logger.info('job_deleted', extra={'job_id': job_id})
     return jsonify({"deleted": True})
 
 
@@ -470,6 +553,11 @@ def rename_speaker(job_id, speaker_id):
     speaker.display_name = display_name
     speaker.updated_at   = datetime.now(timezone.utc)
     db.session.commit()
+    logger.info('speaker_renamed', extra={
+        'job_id':     job_id,
+        'speaker_id': speaker_id,
+        'new_name':   display_name,
+    })
     return jsonify(speaker.to_dict())
 
 
@@ -485,6 +573,10 @@ def edit_segment(job_id, segment_id):
     segment.text       = text
     segment.updated_at = datetime.now(timezone.utc)
     db.session.commit()
+    logger.info('segment_edited', extra={
+        'job_id':     job_id,
+        'segment_id': segment_id,
+    })
     return jsonify(segment.to_dict())
 
 
@@ -535,6 +627,7 @@ def export_docx(job_id):
         output_path=str(output_path),
         include_timestamps=include_ts,
     )
+    logger.info('export_generated', extra={'job_id': job_id, 'format': 'docx'})
     return send_from_directory(
         str(OUTPUT_DIR / job_id),
         "transcript.docx",
@@ -559,12 +652,34 @@ def export_pdf(job_id):
         output_path=str(output_path),
         include_timestamps=include_ts,
     )
+    logger.info('export_generated', extra={'job_id': job_id, 'format': 'pdf'})
     return send_from_directory(
         str(OUTPUT_DIR / job_id),
         "transcript.pdf",
         as_attachment=True,
         download_name=f"{Path(job.filename).stem}_transcript.pdf",
     )
+
+
+# ─── React SPA catch-all (production: Flask serves built frontend) ────────────
+
+REACT_DIST = Path(__file__).parent / "web" / "dist"
+
+if REACT_DIST.exists():
+    @app.route("/assets/<path:filename>")
+    def react_assets(filename):
+        return send_from_directory(str(REACT_DIST / "assets"), filename)
+
+    @app.route("/", defaults={"path": ""})
+    @app.route("/<path:path>")
+    def react_app(path):
+        if path.startswith(("upload", "status", "jobs", "models",
+                             "health", "audio", "download")):
+            return jsonify({"error": "Not found"}), 404
+        index = REACT_DIST / "index.html"
+        if index.exists():
+            return send_from_directory(str(REACT_DIST), "index.html")
+        return jsonify({"error": "Frontend not built"}), 404
 
 
 # ─── Init ─────────────────────────────────────────────────────────────────────
@@ -575,15 +690,21 @@ if __name__ == "__main__":
     with app.app_context():
         db.create_all()
         # Migrate existing DBs: add due_date column if it doesn't exist yet
-        from sqlalchemy import text as sa_text
+        from sqlalchemy import text as sa_text, inspect as sa_inspect
         with db.engine.connect() as _conn:
             try:
                 _conn.execute(sa_text("ALTER TABLE action_items ADD COLUMN due_date TEXT"))
                 _conn.commit()
             except Exception:
                 pass  # column already present
-        print("✓ Database ready")
-    print(f"\n App API        → http://localhost:5001")
-    print(f"   Speech API     → {SPEECH_API_URL}")
-    print(f"   Open browser   → http://localhost:5001\n")
+        tables = sa_inspect(db.engine).get_table_names()
+        if 'transcript_words' in tables:
+            logger.info('transcript_words_table_ready')
+        else:
+            logger.error('transcript_words_table_missing')
+    logger.info('app_api_starting', extra={
+        'port':           5001,
+        'speech_api_url': SPEECH_API_URL,
+        'database':       app.config['SQLALCHEMY_DATABASE_URI'],
+    })
     app.run(debug=True, port=5001)

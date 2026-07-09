@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { assetUrl } from '../lib/api';
 import { RATES } from '../hooks/useAudioPlayer';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -16,21 +17,35 @@ interface WaveformProps {
   data: Float32Array;
   currentTime: number;
   duration: number;
+  isPlaying: boolean;
   onSeek: (s: number) => void;
   onHover: (pct: number | null, time: number | null) => void;
 }
 
-const WaveformCanvas: React.FC<WaveformProps> = ({ data, currentTime, duration, onSeek, onHover }) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+const WaveformCanvas: React.FC<WaveformProps> = ({
+  data, currentTime, duration, isPlaying, onSeek, onHover,
+}) => {
+  const canvasRef      = useRef<HTMLCanvasElement>(null);
+  const currentTimeRef = useRef(currentTime);
+  const animFrameRef   = useRef<number | undefined>(undefined);
 
+  // Keep ref in sync so the draw loop never captures a stale currentTime
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    currentTimeRef.current = currentTime;
+  }, [currentTime]);
 
-    const { width, height } = canvas;
-    ctx.clearRect(0, 0, width, height);
+  // Draw reads from the ref — stable deps mean no stale-closure risk
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current;
+    const ctx    = canvas?.getContext('2d');
+    if (!canvas || !ctx || !data.length) return;
+
+    const W   = canvas.width;
+    const H   = canvas.height;
+    const dur = duration > 0 ? duration : 1;
+    const playheadX = Math.floor((currentTimeRef.current / dur) * W);
+
+    ctx.clearRect(0, 0, W, H);
 
     let maxAmp = 0;
     for (let i = 0; i < data.length; i++) {
@@ -38,24 +53,61 @@ const WaveformCanvas: React.FC<WaveformProps> = ({ data, currentTime, duration, 
     }
     if (maxAmp === 0) return;
 
-    const progress  = duration > 0 ? currentTime / duration : 0;
-    const playedIdx = Math.floor(progress * data.length);
-    const barW      = width / data.length;
+    const barW    = 2;
+    const gap     = 1;
+    const step    = barW + gap;
+    const numBars = Math.floor(W / step);
+    const mid     = H / 2;
 
-    for (let i = 0; i < data.length; i++) {
-      const normalized = data[i] / maxAmp;
-      const barH = Math.max(2, normalized * height * 0.85);
-      const x    = i * barW;
-      const y    = (height - barH) / 2;
-      ctx.fillStyle = i < playedIdx ? '#63b3ed' : 'rgba(255,255,255,0.12)';
-      ctx.fillRect(x + 0.5, y, Math.max(1, barW - 1), barH);
+    for (let i = 0; i < numBars; i++) {
+      const idx = Math.floor((i / numBars) * data.length);
+      const h   = Math.max(2, (data[idx] / maxAmp) * H * 0.85);
+      const x   = i * step;
+      ctx.fillStyle = x < playheadX ? '#63b3ed' : 'rgba(255,255,255,0.12)';
+      ctx.fillRect(x, mid - h / 2, barW, h);
     }
 
-    // Playhead line
-    const lineX = Math.floor(progress * width);
-    ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    ctx.fillRect(lineX, 0, 1, height);
-  }, [data, currentTime, duration]);
+    if (playheadX > 0 && playheadX < W) {
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.fillRect(playheadX - 1, 0, 2, H);
+    }
+  }, [data, duration]); // currentTimeRef read via ref — intentionally not a dep
+
+  // Sync canvas buffer dimensions to CSS layout size, then do initial draw.
+  // Re-runs when `draw` changes (i.e. when data or duration first arrive).
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width  = Math.round(rect.width)  || 800;
+    canvas.height = Math.round(rect.height) || 48;
+    draw();
+  }, [draw]);
+
+  // RAF animation loop — 60 fps while playing, one final draw on pause/seek.
+  // This is the ONLY RAF loop; useAudioPlayer's loop updates state, this one
+  // updates the canvas directly from the ref so React renders never bottleneck it.
+  useEffect(() => {
+    const stop = () => {
+      if (animFrameRef.current !== undefined) {
+        cancelAnimationFrame(animFrameRef.current);
+        animFrameRef.current = undefined;
+      }
+    };
+
+    if (!isPlaying) {
+      stop();
+      draw(); // reflect the exact pause / seek position
+      return stop;
+    }
+
+    const loop = () => {
+      draw();
+      animFrameRef.current = requestAnimationFrame(loop);
+    };
+    animFrameRef.current = requestAnimationFrame(loop);
+    return stop;
+  }, [isPlaying, draw]);
 
   const pctFromEvent = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -63,15 +115,30 @@ const WaveformCanvas: React.FC<WaveformProps> = ({ data, currentTime, duration, 
   };
 
   return (
-    <canvas
-      ref={canvasRef}
-      width={800}
-      height={48}
-      onClick={(e) => { e.stopPropagation(); onSeek(pctFromEvent(e) * duration); }}
-      onMouseMove={(e) => { const p = pctFromEvent(e); onHover(p, p * duration); }}
-      onMouseLeave={() => onHover(null, null)}
-      className="w-full h-12 cursor-pointer rounded"
-    />
+    <div className="relative">
+      <canvas
+        ref={canvasRef}
+        aria-hidden="true"
+        onClick={(e) => { e.stopPropagation(); onSeek(pctFromEvent(e) * duration); }}
+        onMouseMove={(e) => { const p = pctFromEvent(e); onHover(p, p * duration); }}
+        onMouseLeave={() => onHover(null, null)}
+        className="w-full h-12 cursor-pointer rounded"
+      />
+      <input
+        type="range"
+        min={0}
+        max={duration || 0}
+        step={0.1}
+        value={currentTime}
+        onChange={(e) => onSeek(parseFloat(e.target.value))}
+        aria-label="Audio seek position"
+        aria-valuemin={0}
+        aria-valuemax={Math.round(duration || 0)}
+        aria-valuenow={Math.round(currentTime)}
+        aria-valuetext={`${fmtTime(currentTime)} of ${fmtTime(duration)}`}
+        className="sr-only"
+      />
+    </div>
   );
 };
 
@@ -126,7 +193,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
 
     (async () => {
       try {
-        const res = await fetch(`/audio/${jobId}`, { signal: controller.signal });
+        const res = await fetch(assetUrl(`/audio/${jobId}`), { signal: controller.signal });
         if (!res.ok) throw new Error('non-ok');
         const buf = await res.arrayBuffer();
         if (cancelled) return;
@@ -218,32 +285,33 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
         {/* Skip back 10 s */}
         <button
           onClick={() => onSeek(currentTime - 10)}
+          aria-label="Skip back 10 seconds"
           className="font-mono text-xs text-muted hover:text-white transition flex-shrink-0 select-none"
-          title="Back 10 s"
         >
-          ⏮10
+          <span aria-hidden="true">⏮10</span>
         </button>
 
         {/* Play / Pause */}
         <button
           onClick={onTogglePlay}
+          aria-label={isPlaying ? 'Pause audio' : 'Play audio'}
+          aria-pressed={isPlaying}
           className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 transition select-none ${
             isPlaying
               ? 'bg-accent text-bg hover:opacity-90'
               : 'bg-surface border border-subtle text-white hover:border-accent'
           }`}
-          title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}
         >
-          <span className="text-sm">{isPlaying ? '⏸' : '▶'}</span>
+          <span aria-hidden="true" className="text-sm">{isPlaying ? '⏸' : '▶'}</span>
         </button>
 
         {/* Skip forward 10 s */}
         <button
           onClick={() => onSeek(currentTime + 10)}
+          aria-label="Skip forward 10 seconds"
           className="font-mono text-xs text-muted hover:text-white transition flex-shrink-0 select-none"
-          title="Forward 10 s"
         >
-          10⏭
+          <span aria-hidden="true">10⏭</span>
         </button>
 
         {/* Seek area */}
@@ -268,6 +336,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
               data={waveformData!}
               currentTime={currentTime}
               duration={duration}
+              isPlaying={isPlaying}
               onSeek={onSeek}
               onHover={(pct, time) =>
                 pct !== null && time !== null
@@ -283,6 +352,11 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
               step={0.1}
               value={currentTime}
               onChange={(e) => onSeek(parseFloat(e.target.value))}
+              aria-label="Audio seek position"
+              aria-valuemin={0}
+              aria-valuemax={Math.round(duration || 0)}
+              aria-valuenow={Math.round(currentTime)}
+              aria-valuetext={`${fmtTime(currentTime)} of ${fmtTime(duration)}`}
               style={{
                 background: `linear-gradient(to right, #63b3ed ${progress}%, rgba(255,255,255,0.08) ${progress}%)`,
               }}
@@ -300,13 +374,19 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
         <div className="relative flex-shrink-0" ref={shortcutsWrapRef}>
           <button
             onClick={() => setShowShortcuts((v) => !v)}
+            aria-label="Show keyboard shortcuts"
+            aria-expanded={showShortcuts}
             className="w-5 h-5 rounded-full border border-subtle text-muted hover:border-accent hover:text-accent transition font-mono text-xs flex items-center justify-center select-none"
-            title="Keyboard shortcuts"
           >
-            ?
+            <span aria-hidden="true">?</span>
           </button>
           {showShortcuts && (
-            <div className="absolute bottom-full right-0 mb-2 w-60 bg-surface border border-subtle rounded p-3 shadow-xl z-50">
+            <div
+              role="dialog"
+              aria-label="Keyboard shortcuts"
+              aria-modal="false"
+              className="absolute bottom-full right-0 mb-2 w-60 bg-surface border border-subtle rounded p-3 shadow-xl z-50"
+            >
               <p className="font-sans text-xs font-semibold text-white mb-2">Keyboard shortcuts</p>
               <div className="space-y-1.5 font-mono text-xs text-muted">
                 {[
@@ -330,18 +410,20 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
       <div className="flex items-center gap-1.5">
 
         {/* Rate buttons */}
-        <div className="flex gap-0.5">
+        <div role="group" aria-label="Playback speed" className="flex gap-0.5">
           {RATES.map((r) => (
             <button
               key={r}
               onClick={() => onSetPlaybackRate(r)}
+              aria-pressed={playbackRate === r}
+              aria-label={`Set playback speed to ${r}x`}
               className={`px-2 py-0.5 rounded font-mono text-xs transition select-none ${
                 playbackRate === r
                   ? 'bg-accent text-bg font-medium'
                   : 'text-muted hover:text-white'
               }`}
             >
-              {r}x
+              <span aria-hidden="true">{r}x</span>
             </button>
           ))}
         </div>
@@ -351,10 +433,11 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
         {/* Mute toggle */}
         <button
           onClick={onToggleMute}
+          aria-label={isMuted ? 'Unmute' : 'Mute'}
+          aria-pressed={isMuted}
           className="text-muted hover:text-white transition flex-shrink-0 text-sm select-none"
-          title={isMuted ? 'Unmute' : 'Mute'}
         >
-          {isMuted || volume === 0 ? '🔇' : volume < 0.5 ? '🔉' : '🔊'}
+          <span aria-hidden="true">{isMuted || volume === 0 ? '🔇' : volume < 0.5 ? '🔉' : '🔊'}</span>
         </button>
 
         {/* Volume slider */}
@@ -365,6 +448,11 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
           step={0.01}
           value={volDisplay}
           onChange={(e) => onSetVolume(parseFloat(e.target.value))}
+          aria-label="Volume"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(volPct)}
+          aria-valuetext={isMuted ? 'Muted' : `${Math.round(volPct)}%`}
           style={{
             background: `linear-gradient(to right, #63b3ed ${volPct}%, rgba(255,255,255,0.08) ${volPct}%)`,
           }}
