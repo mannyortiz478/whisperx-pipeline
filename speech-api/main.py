@@ -116,6 +116,54 @@ def _regex_extract(segments: list, speaker_labels: dict) -> list:
     return items[:25]
 
 
+_VALID_PRIORITIES = {"high", "medium", "normal"}
+_MAX_ITEMS = 25
+_MAX_TEXT_LEN = 500
+_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL | re.IGNORECASE)
+
+
+def _parse_llm_json(raw: str):
+    """Parse JSON from model output, tolerating a surrounding markdown code fence."""
+    m = _FENCE_RE.match(raw or "")
+    return json.loads(m.group(1) if m else raw)
+
+
+def _clean_str(value) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
+def validate_action_items(data) -> Optional[list]:
+    """Treat model output as untrusted and coerce it into the action-item schema.
+
+    Returns None if the top-level shape is wrong (caller falls back to regex).
+    Drops items that aren't objects or have no usable text; coerces the rest.
+    """
+    if not isinstance(data, list):
+        return None
+    items = []
+    for raw in data:
+        if not isinstance(raw, dict):
+            continue
+        text = _clean_str(raw.get("text"))
+        if not text:
+            continue
+        priority = _clean_str(raw.get("priority"))
+        priority = priority.lower() if priority else None
+        items.append({
+            "text":      text[:_MAX_TEXT_LEN],
+            "assignee":  _clean_str(raw.get("assignee")) or "Team",
+            "priority":  priority if priority in _VALID_PRIORITIES else "normal",
+            "timestamp": _clean_str(raw.get("timestamp")) or "00:00",
+            "due_date":  _clean_str(raw.get("due_date")),
+        })
+        if len(items) >= _MAX_ITEMS:
+            break
+    return items
+
+
 def extract_action_items(segments: list, speaker_labels: dict) -> list:
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 
@@ -146,9 +194,10 @@ def extract_action_items(segments: list, speaker_labels: dict) -> list:
                 messages=[{"role": "user", "content": transcript_str}],
             )
             raw = next((b.text for b in response.content if b.type == "text"), "")
-            items = json.loads(raw)
-            if isinstance(items, list):
-                return items[:25]
+            items = validate_action_items(_parse_llm_json(raw))
+            if items is not None:
+                return items
+            logger.warning('claude_extraction_invalid_shape', extra={'raw_preview': raw[:200]})
         except Exception as exc:
             logger.error('claude_extraction_failed', extra={'error': str(exc)}, exc_info=True)
 
@@ -211,7 +260,7 @@ async def process_audio(
 
         logger.info('processing_started', extra={
             'request_id':           request_id,
-            'filename':             file.filename,
+            'upload_filename':      file.filename,
             'transcription_model':  transcription_model,
             'device':               device,
             'enable_diarization':   enable_diarization,
@@ -304,7 +353,7 @@ async def process_audio(
     except Exception as e:
         logger.error('processing_failed', extra={
             'request_id': request_id,
-            'filename':   file.filename,
+            'upload_filename': file.filename,
             'model':      transcription_model,
             'error':      str(e),
         }, exc_info=True)

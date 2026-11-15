@@ -323,7 +323,7 @@ def run_job(job_id: str, filepath: str, hf_token: str | None, transcription_mode
                     ))
 
             # Create ActionItem rows
-            # GPT-4o returns "assignee" directly; regex returns "speaker_label" (SPEAKER_XX id)
+            # Claude returns "assignee" directly; regex returns "speaker_label" (SPEAKER_XX id)
             for item in data.get("action_items", []):
                 raw_lbl = item.get("speaker_label", "")
                 sp = speaker_map.get(raw_lbl)
