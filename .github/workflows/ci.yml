@@ -87,18 +87,22 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r app-api/requirements.txt
+          pip install fastapi "uvicorn[standard]" python-multipart
           pnpm install --frozen-lockfile
           pnpm --filter web exec playwright install --with-deps chromium
 
-      # The tests start their own mock speech-api on :8000; Flask and Vite must already be up.
-      - name: Start app-api and Vite
+      # The UI only enables upload when app-api's /health reports the speech-api as reachable.
+      # speech-api's /health works without WhisperX (imported only when processing audio),
+      # and the specs intercept /upload and /status, so no transcription runs.
+      - name: Start speech-api, app-api and Vite
         run: |
           mkdir -p shared
+          (cd speech-api && python -m uvicorn main:app --port 8000 > ../speech.log 2>&1 &)
           (cd app-api && SPEECH_API_BASE_URL=http://localhost:8000 python app.py > ../flask.log 2>&1 &)
           (pnpm --filter web dev > vite.log 2>&1 &)
-          for url in http://localhost:5001/health http://localhost:5173; do
+          for url in http://localhost:8000/health http://localhost:5001/health http://localhost:5173; do
             for i in $(seq 1 60); do curl -sf "$url" > /dev/null && break; sleep 1; done
-            curl -sf "$url" > /dev/null || { echo "Timed out waiting for $url"; cat flask.log vite.log; exit 1; }
+            curl -sf "$url" > /dev/null || { echo "Timed out waiting for $url"; cat speech.log flask.log vite.log; exit 1; }
           done
 
       - name: Run Playwright
@@ -112,6 +116,7 @@ jobs:
           path: |
             app-api/web/test-results/
             app-api/web/playwright-report/
+            speech.log
             flask.log
             vite.log
           retention-days: 7
