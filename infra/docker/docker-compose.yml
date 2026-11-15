@@ -10,7 +10,7 @@ services:
       - "${SPEECH_API_PORT:-8000}:8000"
     environment:
       - HF_TOKEN=${HF_TOKEN}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - DEFAULT_MODEL=${DEFAULT_MODEL:-base}
       - TRANSCRIPTION_MODEL_NAMES=${TRANSCRIPTION_MODEL_NAMES:-tiny,base,small,medium,large-v3}
       - SPEECH_API_PORT=8000

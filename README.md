@@ -69,8 +69,8 @@ Open `.env` and fill in:
 # Required — get yours at https://huggingface.co/settings/tokens
 HF_TOKEN=hf_your_token_here
 
-# Optional — enables GPT-4o action item extraction (falls back to regex if omitted)
-OPENAI_API_KEY=sk-...
+# Optional — enables Claude action item extraction (falls back to regex if omitted)
+ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 #### HuggingFace token setup (required for speaker diarization)
@@ -180,7 +180,7 @@ make shell-speech # Open shell in speech-api container
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `HF_TOKEN` | For diarization | — | HuggingFace access token |
-| `OPENAI_API_KEY` | No | — | GPT-4o action item extraction |
+| `ANTHROPIC_API_KEY` | No | — | Claude action item extraction (regex fallback if unset) |
 | `DEFAULT_MODEL` | No | `base` | Default Whisper model |
 | `APP_API_PORT` | No | `5001` | Port for Flask API |
 | `SPEECH_API_PORT` | No | `8000` | Port for FastAPI speech service |
@@ -243,6 +243,6 @@ whisperx-pipeline/
 - **Speech API:** Python FastAPI + WhisperX + pyannote.audio
 - **Transcription:** WhisperX (faster-whisper) — tiny / base / small / medium / large-v3
 - **Diarization:** pyannote speaker diarization 3.1
-- **Action Items:** GPT-4o (optional) with regex fallback
+- **Action Items:** Claude (optional), schema-validated, with regex fallback
 - **Exports:** TXT, DOCX, PDF
 - **Monorepo:** pnpm workspaces with shared TypeScript types
